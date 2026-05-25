@@ -3,10 +3,15 @@ package com.slopIpCam.cam
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.os.IBinder
+import androidx.camera.core.*
+import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.*
 import androidx.preference.PreferenceManager
+import java.io.ByteArrayOutputStream
 
 class CamService : Service(), LifecycleOwner {
     private val lifecycleRegistry = LifecycleRegistry(this)
@@ -36,6 +41,9 @@ class CamService : Service(), LifecycleOwner {
 
         flashlight = FlashlightManager(this)
         pttPlayer = PttPlayer()
+        motionDetector = MotionDetector(
+            sensitivity = prefs.getInt("motion_sensitivity", 30)
+        )
         rtspStreamer = RtspStreamer(this) { err -> updateNotification("Stream error: $err") }
 
         wsClient = WsClient(
@@ -90,9 +98,54 @@ class CamService : Service(), LifecycleOwner {
     }
 
     // Populated by MotionWatch extension (Task C10)
-    var cameraProvider: androidx.camera.lifecycle.ProcessCameraProvider? = null
-    fun startMotionWatch() {}
-    fun stopMotionWatch() {}
+    var cameraProvider: ProcessCameraProvider? = null
+    private lateinit var motionDetector: MotionDetector
+    private var lastSnapshotMs = 0L
+
+    fun startMotionWatch() {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val intervalMs = (prefs.getString("snapshot_interval_s", "30")?.toLong() ?: 30L) * 1000L
+
+        val providerFuture = ProcessCameraProvider.getInstance(this)
+        providerFuture.addListener({
+            cameraProvider = providerFuture.get()
+            val analysis = ImageAnalysis.Builder()
+                .setTargetResolution(android.util.Size(640, 480))
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .build()
+
+            var prevBitmap: Bitmap? = null
+            analysis.setAnalyzer(ContextCompat.getMainExecutor(this)) { proxy ->
+                val bmp = proxy.toBitmap()
+                val prev = prevBitmap
+                if (prev != null && motionDetector.analyze(bmp, prev)) {
+                    val now = System.currentTimeMillis()
+                    if (now - lastSnapshotMs >= intervalMs) {
+                        lastSnapshotMs = now
+                        sendSnapshot(bmp)
+                    }
+                }
+                prevBitmap = bmp
+                proxy.close()
+            }
+            cameraProvider?.bindToLifecycle(
+                this,
+                CameraSelector.DEFAULT_BACK_CAMERA,
+                analysis
+            )
+        }, ContextCompat.getMainExecutor(this))
+    }
+
+    fun stopMotionWatch() {
+        cameraProvider?.unbindAll()
+        cameraProvider = null
+    }
+
+    private fun sendSnapshot(bmp: Bitmap) {
+        val out = ByteArrayOutputStream()
+        bmp.compress(Bitmap.CompressFormat.JPEG, 80, out)
+        wsClient.sendBinary(out.toByteArray())
+    }
 
     private fun buildNotification(status: String): Notification {
         val intent = Intent(this, MainActivity::class.java)
