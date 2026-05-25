@@ -28,10 +28,11 @@ class RtspStreamer(
         if (stream.isStreaming) stream.stopStream()
     }
 
-    override fun onConnectionSuccess() = Log.i("RtspStreamer", "RTSP connected")
+    override fun onConnectionStarted(url: String) {}
+    override fun onConnectionSuccess() { Log.i("RtspStreamer", "RTSP connected") }
     override fun onConnectionFailed(reason: String) { onError(reason); stop() }
     override fun onNewBitrate(bitrate: Long) {}
-    override fun onDisconnect() = Log.i("RtspStreamer", "RTSP disconnected")
-    override fun onAuthError() = onError("RTSP auth error")
+    override fun onDisconnect() { Log.i("RtspStreamer", "RTSP disconnected") }
+    override fun onAuthError() { onError("RTSP auth error") }
     override fun onAuthSuccess() {}
 }

@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<PreferenceScreen xmlns:app="http://schemas.android.com/apk/res-auto">
+<PreferenceScreen xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:android="http://schemas.android.com/apk/res/android">
     <EditTextPreference
         app:key="ctrl_server_url"
         app:title="ctrl-server URL"
@@ -17,11 +18,10 @@
         app:title="Motion Sensitivity"
         app:defaultValue="30"
         app:min="5"
-        app:max="100" />
+        android:max="100" />
 
     <EditTextPreference
         app:key="snapshot_interval_s"
         app:title="Min Snapshot Interval (seconds)"
-        app:defaultValue="30"
-        app:inputType="number" />
+        app:defaultValue="30" />
 </PreferenceScreen>

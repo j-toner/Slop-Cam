@@ -93,6 +93,7 @@ class MainActivity : AppCompatActivity() {
                 PeerConnection.RTCConfiguration(emptyList()),
                 object : PeerConnection.Observer {
                     override fun onIceConnectionChange(s: PeerConnection.IceConnectionState) {}
+                    override fun onIceConnectionReceivingChange(receiving: Boolean) {}
                     override fun onSignalingChange(s: PeerConnection.SignalingState) {}
                     override fun onIceGatheringChange(s: PeerConnection.IceGatheringState) {}
                     override fun onIceCandidatesRemoved(c: Array<out IceCandidate>?) {}
