@@ -1,0 +1,18 @@
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml
+      - ./recordings:/recordings
+
+  ctrl-server:
+    build: ./ctrl-server
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - LISTEN_ADDR=${TAILSCALE_IP}:8080
+      - SNAPSHOT_DIR=/data/snapshots
+    volumes:
+      - /data/snapshots:/data/snapshots

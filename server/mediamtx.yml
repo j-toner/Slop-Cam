@@ -1,0 +1,9 @@
+rtspAddress: ${TAILSCALE_IP}:8554
+webrtcAddress: ${TAILSCALE_IP}:8889
+hlsAddress: ""
+rtmpAddress: ""
+srtAddress: ""
+
+paths:
+  cam:
+    record: no
