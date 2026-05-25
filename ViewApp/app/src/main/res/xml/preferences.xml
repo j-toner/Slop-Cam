@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:app="http://schemas.android.com/apk/res-auto">
+    <EditTextPreference
+        app:key="ctrl_server_url"
+        app:title="ctrl-server URL"
+        app:defaultValue="ws://100.x.x.x:8080/ws" />
+    <EditTextPreference
+        app:key="mediamtx_base_url"
+        app:title="mediamtx Base URL"
+        app:defaultValue="http://100.x.x.x:8889" />
+    <ListPreference
+        app:key="stream_resolution"
+        app:title="Stream Resolution"
+        app:entries="@array/resolutions"
+        app:entryValues="@array/resolutions"
+        app:defaultValue="720p" />
+</PreferenceScreen>
