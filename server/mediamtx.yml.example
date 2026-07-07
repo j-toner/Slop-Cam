@@ -1,0 +1,30 @@
+# hardcoded Tailscale IP: mediamtx cannot expand ${VAR} in this file,
+# and MEDIAMTX_* env overrides were ignored in v1.18.2 — keep in sync with .env
+rtspAddress: 100.112.94.72:8554
+webrtcAddress: 100.112.94.72:8889
+
+hls: no
+rtmp: no
+srt: no
+
+# publish requires creds (CamApp embeds them in its RTSP URL);
+# read/WHEP stays open — tailnet-only exposure
+authInternalUsers:
+  - user: any
+    permissions:
+      - action: read
+      - action: playback
+  - user: slopcam
+    pass: CHANGE_ME_openssl_rand_hex_16
+    permissions:
+      - action: publish
+  - user: any
+    ips: ['127.0.0.1', '::1']
+    permissions:
+      - action: api
+      - action: metrics
+      - action: pprof
+
+paths:
+  cam:
+    record: no
