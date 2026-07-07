@@ -13,6 +13,17 @@
         app:defaultValue="100.x.x.x"
         app:summary="Tailscale IP of home server" />
 
+    <EditTextPreference
+        app:key="rtsp_user"
+        app:title="RTSP Publish User"
+        app:defaultValue="slopcam"
+        app:summary="Must match authInternalUsers in mediamtx.yml" />
+
+    <EditTextPreference
+        app:key="rtsp_pass"
+        app:title="RTSP Publish Password"
+        app:summary="Required — must match authInternalUsers pass in server mediamtx.yml" />
+
     <SeekBarPreference
         app:key="motion_sensitivity"
         app:title="Motion Sensitivity"

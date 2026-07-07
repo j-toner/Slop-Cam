@@ -4,6 +4,7 @@ import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.os.Handler
 import android.os.IBinder
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -12,6 +13,9 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.*
 import androidx.preference.PreferenceManager
 import java.io.ByteArrayOutputStream
+import java.net.URLEncoder
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 class CamService : Service(), LifecycleOwner {
     private val lifecycleRegistry = LifecycleRegistry(this)
@@ -20,7 +24,15 @@ class CamService : Service(), LifecycleOwner {
     private lateinit var wsClient: WsClient
     private lateinit var flashlight: FlashlightManager
     private lateinit var pttPlayer: PttPlayer
+    private lateinit var motionDetector: MotionDetector
     private var rtspStreamer: RtspStreamer? = null
+
+    private lateinit var handler: Handler
+    private var pollRunnable: Runnable? = null
+    private lateinit var analysisExecutor: ExecutorService
+
+    private var cameraProvider: ProcessCameraProvider? = null
+    private var lastSnapshotMs = 0L
 
     companion object {
         const val CHANNEL_ID = "slopIpCam"
@@ -35,9 +47,19 @@ class CamService : Service(), LifecycleOwner {
         createNotificationChannel()
         startForeground(NOTIF_ID, buildNotification("Idle"))
 
+        handler = Handler(mainLooper)
+        analysisExecutor = Executors.newSingleThreadExecutor()
+
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val wsUrl = (prefs.getString("ctrl_server_url", "ws://100.x.x.x:8080/ws") ?: "ws://100.x.x.x:8080/ws") + "?role=cam"
         val mediamtxHost = prefs.getString("mediamtx_host", "100.x.x.x") ?: "100.x.x.x"
+        val rtspUser = prefs.getString("rtsp_user", "slopcam") ?: "slopcam"
+        val rtspPass = prefs.getString("rtsp_pass", "") ?: ""
+        // no baked-in default: publish auth fails closed until the user sets
+        // the password (matching mediamtx.yml authInternalUsers) in Settings
+        val rtspUrl = if (rtspUser.isNotEmpty() && rtspPass.isNotEmpty()) {
+            "rtsp://${URLEncoder.encode(rtspUser, "UTF-8")}:${URLEncoder.encode(rtspPass, "UTF-8")}@$mediamtxHost:8554/cam"
+        } else null
 
         flashlight = FlashlightManager(this)
         pttPlayer = PttPlayer()
@@ -48,33 +70,53 @@ class CamService : Service(), LifecycleOwner {
 
         wsClient = WsClient(
             url = wsUrl,
-            onText = { msg -> handleCommand(msg, mediamtxHost) },
+            onText = { msg -> handleCommand(msg, rtspUrl) },
             onBinary = { pcm -> pttPlayer.write(pcm) },
-            onConnected = { updateNotification("Idle") },
+            onConnected = { updateNotification(if (rtspStreamer?.isStreaming == true) "Streaming" else "Idle") },
             onDisconnected = { updateNotification("Reconnecting...") }
         )
         wsClient.connect()
+        startMotionWatchPolling()
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        pollMotionWatch()
-        return START_STICKY
-    }
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
-    private fun handleCommand(msg: String, mediamtxHost: String) {
+    private fun handleCommand(msg: String, rtspUrl: String?) {
         when {
             msg.startsWith("CMD:START_STREAM") -> {
+                if (rtspUrl == null) {
+                    updateNotification("Set RTSP password in Settings")
+                    return
+                }
                 val res = msg.substringAfter("CMD:START_STREAM:").trim()
                 val (w, h) = resolutionDimensions(res)
-                rtspStreamer?.start("rtsp://$mediamtxHost:8554/cam", w, h)
-                updateNotification("Streaming")
+                // RTSP stream and MotionWatch cannot share the camera
+                handler.post {
+                    stopMotionWatch()
+                    rtspStreamer?.start(rtspUrl, w, h)
+                    updateNotification("Streaming")
+                }
             }
             msg == "CMD:STOP_STREAM" -> {
-                rtspStreamer?.stop()
-                updateNotification("Idle")
+                handler.post {
+                    rtspStreamer?.stop()
+                    updateNotification("Idle")
+                    // poll loop re-enables motion watch if it's switched on
+                }
             }
-            msg == "CMD:FLASHLIGHT_ON" -> flashlight.setTorch(true)
-            msg == "CMD:FLASHLIGHT_OFF" -> flashlight.setTorch(false)
+            msg == "CMD:FLASHLIGHT_ON" -> setTorch(true)
+            msg == "CMD:FLASHLIGHT_OFF" -> setTorch(false)
+        }
+    }
+
+    private fun setTorch(on: Boolean) {
+        val streamer = rtspStreamer
+        // while streaming, the camera device is owned by RootEncoder —
+        // CameraManager.setTorchMode would throw, use the stream's lantern
+        if (streamer != null && streamer.isStreaming) {
+            if (!streamer.setTorch(on)) flashlight.setTorch(on)
+        } else {
+            flashlight.setTorch(on)
         }
     }
 
@@ -84,49 +126,56 @@ class CamService : Service(), LifecycleOwner {
         else -> Pair(1280, 720)
     }
 
-    private fun pollMotionWatch() {
-        val handler = android.os.Handler(mainLooper)
-        handler.post(object : Runnable {
+    private fun startMotionWatchPolling() {
+        if (pollRunnable != null) return
+        val r = object : Runnable {
             override fun run() {
                 val on = getSharedPreferences("runtime", MODE_PRIVATE)
                     .getBoolean("motion_watch", false)
-                if (on && cameraProvider == null) startMotionWatch()
-                else if (!on && cameraProvider != null) stopMotionWatch()
+                val streaming = rtspStreamer?.isStreaming == true
+                if (on && !streaming && cameraProvider == null) startMotionWatch()
+                else if ((!on || streaming) && cameraProvider != null) stopMotionWatch()
                 handler.postDelayed(this, 2000)
             }
-        })
+        }
+        pollRunnable = r
+        handler.post(r)
     }
 
-    // Populated by MotionWatch extension (Task C10)
-    var cameraProvider: ProcessCameraProvider? = null
-    private lateinit var motionDetector: MotionDetector
-    private var lastSnapshotMs = 0L
-
-    fun startMotionWatch() {
+    private fun startMotionWatch() {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        val intervalMs = (prefs.getString("snapshot_interval_s", "30")?.toLong() ?: 30L) * 1000L
+        val intervalMs = (prefs.getString("snapshot_interval_s", "30")?.toLongOrNull() ?: 30L) * 1000L
 
         val providerFuture = ProcessCameraProvider.getInstance(this)
         providerFuture.addListener({
+            if (rtspStreamer?.isStreaming == true) return@addListener // lost the race to a stream start
             cameraProvider = providerFuture.get()
             val analysis = ImageAnalysis.Builder()
                 .setTargetResolution(android.util.Size(640, 480))
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
 
-            var prevBitmap: Bitmap? = null
-            analysis.setAnalyzer(ContextCompat.getMainExecutor(this)) { proxy ->
-                val bmp = proxy.toBitmap()
-                val prev = prevBitmap
-                if (prev != null && motionDetector.analyze(bmp, prev)) {
-                    val now = System.currentTimeMillis()
-                    if (now - lastSnapshotMs >= intervalMs) {
-                        lastSnapshotMs = now
-                        sendSnapshot(bmp)
+            var prevLuma: ByteArray? = null
+            analysis.setAnalyzer(analysisExecutor) { proxy ->
+                try {
+                    val plane = proxy.planes[0]
+                    val buf = plane.buffer
+                    val luma = ByteArray(buf.remaining())
+                    buf.get(luma)
+                    val prev = prevLuma
+                    if (prev != null && prev.size == luma.size &&
+                        motionDetector.analyze(luma, prev, proxy.width, proxy.height, plane.rowStride)
+                    ) {
+                        val now = System.currentTimeMillis()
+                        if (now - lastSnapshotMs >= intervalMs) {
+                            lastSnapshotMs = now
+                            sendSnapshot(proxy.toBitmap())
+                        }
                     }
+                    prevLuma = luma
+                } finally {
+                    proxy.close()
                 }
-                prevBitmap = bmp
-                proxy.close()
             }
             cameraProvider?.bindToLifecycle(
                 this,
@@ -136,11 +185,12 @@ class CamService : Service(), LifecycleOwner {
         }, ContextCompat.getMainExecutor(this))
     }
 
-    fun stopMotionWatch() {
+    private fun stopMotionWatch() {
         cameraProvider?.unbindAll()
         cameraProvider = null
     }
 
+    // runs on analysisExecutor — JPEG compression stays off the main thread
     private fun sendSnapshot(bmp: Bitmap) {
         val out = ByteArrayOutputStream()
         bmp.compress(Bitmap.CompressFormat.JPEG, 80, out)
@@ -169,10 +219,14 @@ class CamService : Service(), LifecycleOwner {
     }
 
     override fun onDestroy() {
+        pollRunnable?.let { handler.removeCallbacks(it) }
+        pollRunnable = null
+        stopMotionWatch()
         lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         wsClient.disconnect()
         rtspStreamer?.stop()
         pttPlayer.release()
+        analysisExecutor.shutdown()
         super.onDestroy()
     }
 

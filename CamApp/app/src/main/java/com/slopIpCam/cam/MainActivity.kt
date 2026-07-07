@@ -2,6 +2,7 @@ package com.slopIpCam.cam
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.widget.Button
 import android.widget.Switch
@@ -24,12 +25,7 @@ class MainActivity : AppCompatActivity() {
         motionSwitch = findViewById(R.id.switchMotion)
 
         serviceSwitch.setOnCheckedChangeListener { _, on ->
-            if (on) {
-                requestPermissionsIfNeeded()
-                CamService.start(this)
-            } else {
-                CamService.stop(this)
-            }
+            if (on) startServiceWithPermissions() else CamService.stop(this)
         }
 
         motionSwitch.setOnCheckedChangeListener { _, on ->
@@ -40,13 +36,48 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnSettings).setOnClickListener {
             startActivity(android.content.Intent(this, SettingsActivity::class.java))
         }
+
+        if (intent.getBooleanExtra(EXTRA_AUTO_START, false)) {
+            serviceSwitch.isChecked = true // triggers startServiceWithPermissions
+        }
     }
 
-    private fun requestPermissionsIfNeeded() {
-        val needed = arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
-        val missing = needed.filter {
+    private fun startServiceWithPermissions() {
+        val missing = requiredPermissions().filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
-        if (missing.isNotEmpty()) ActivityCompat.requestPermissions(this, missing.toTypedArray(), 1)
+        if (missing.isEmpty()) {
+            CamService.start(this)
+        } else {
+            // service starts in onRequestPermissionsResult once granted
+            ActivityCompat.requestPermissions(this, missing.toTypedArray(), REQ_PERMS)
+        }
+    }
+
+    private fun requiredPermissions(): List<String> {
+        val perms = mutableListOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= 33) perms.add(Manifest.permission.POST_NOTIFICATIONS)
+        return perms
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQ_PERMS) return
+        val cameraAndMicGranted = requiredPermissions()
+            .filter { it != Manifest.permission.POST_NOTIFICATIONS }
+            .all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }
+        if (cameraAndMicGranted && serviceSwitch.isChecked) {
+            CamService.start(this)
+        } else if (!cameraAndMicGranted) {
+            serviceSwitch.isChecked = false
+            statusText.text = "Camera/mic permission required"
+        }
+    }
+
+    companion object {
+        const val EXTRA_AUTO_START = "auto_start"
+        private const val REQ_PERMS = 1
     }
 }
