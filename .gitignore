@@ -1,0 +1,11 @@
+# Gradle / Android build outputs
+.gradle/
+.kotlin/
+build/
+local.properties
+
+# IDE / tooling
+.idea/
+.vscode/
+.claude/
+.mcp.json
