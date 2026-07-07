@@ -7,7 +7,31 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
+
+func TestPruneSnapshots(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC)
+	for _, day := range []string{"2026-06-01", "2026-07-01", "2026-07-07"} {
+		os.MkdirAll(filepath.Join(dir, day), 0755)
+		os.WriteFile(filepath.Join(dir, day, "1.jpg"), []byte("x"), 0644)
+	}
+	os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("keep"), 0644)
+
+	if err := pruneSnapshots(dir, 14, now); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "2026-06-01")); !os.IsNotExist(err) {
+		t.Error("2026-06-01 should have been pruned")
+	}
+	for _, keep := range []string{"2026-07-01", "2026-07-07", "notes.txt"} {
+		if _, err := os.Stat(filepath.Join(dir, keep)); err != nil {
+			t.Errorf("%s should have been kept: %v", keep, err)
+		}
+	}
+}
 
 func TestListSnapshots(t *testing.T) {
 	dir := t.TempDir()

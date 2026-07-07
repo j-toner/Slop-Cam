@@ -3,11 +3,16 @@ package main
 import (
 	"context"
 	"log"
+	"time"
 
 	"github.com/coder/websocket"
 )
 
-const maxMsgSize = 4 * 1024 * 1024 // 4MB for JPEG snapshots
+const (
+	maxMsgSize   = 4 * 1024 * 1024 // 4MB for JPEG snapshots
+	pingInterval = 20 * time.Second
+	pingTimeout  = 10 * time.Second
+)
 
 type ClientRole string
 
@@ -25,6 +30,7 @@ type Client struct {
 	hub    *Hub
 	conn   *websocket.Conn
 	role   ClientRole
+	res    string // viewer's preferred stream resolution ("" = default)
 	send   chan outMsg
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -38,7 +44,7 @@ func (c *Client) sendMsg(msgType websocket.MessageType, data []byte) {
 	}
 }
 
-func serveWs(hub *Hub, conn *websocket.Conn, roleStr string) {
+func serveWs(hub *Hub, conn *websocket.Conn, roleStr, res string) {
 	role := ClientRole(roleStr)
 	if role != RoleCam && role != RoleViewer {
 		conn.Close(websocket.StatusPolicyViolation, "invalid role")
@@ -46,7 +52,7 @@ func serveWs(hub *Hub, conn *websocket.Conn, roleStr string) {
 	}
 	conn.SetReadLimit(maxMsgSize)
 	ctx, cancel := context.WithCancel(context.Background())
-	c := &Client{hub: hub, conn: conn, role: role,
+	c := &Client{hub: hub, conn: conn, role: role, res: res,
 		send: make(chan outMsg, 256), ctx: ctx, cancel: cancel}
 	hub.register <- c
 	go c.writePump()
@@ -74,6 +80,8 @@ func (c *Client) readPump() {
 
 func (c *Client) writePump() {
 	defer c.conn.CloseNow()
+	ticker := time.NewTicker(pingInterval)
+	defer ticker.Stop()
 	for {
 		select {
 		case msg, ok := <-c.send:
@@ -82,6 +90,16 @@ func (c *Client) writePump() {
 				return
 			}
 			if err := c.conn.Write(c.ctx, msg.msgType, msg.data); err != nil {
+				return
+			}
+		case <-ticker.C:
+			// detect half-open connections (phone dropped off network)
+			pingCtx, cancel := context.WithTimeout(c.ctx, pingTimeout)
+			err := c.conn.Ping(pingCtx)
+			cancel()
+			if err != nil {
+				log.Printf("ping %s failed, closing: %v", c.role, err)
+				c.cancel()
 				return
 			}
 		case <-c.ctx.Done():

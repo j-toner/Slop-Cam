@@ -11,10 +11,13 @@ import (
 	"github.com/coder/websocket"
 )
 
+const defaultResolution = "720p"
+
 type Hub struct {
 	mu          sync.RWMutex
 	cam         *Client
 	viewers     map[*Client]bool
+	lastRes     string
 	register    chan *Client
 	unregister  chan *Client
 	fromCam     chan Message
@@ -31,6 +34,7 @@ type Message struct {
 func newHub(snapshotDir string) *Hub {
 	return &Hub{
 		viewers:     make(map[*Client]bool),
+		lastRes:     defaultResolution,
 		register:    make(chan *Client, 8),
 		unregister:  make(chan *Client, 8),
 		fromCam:     make(chan Message, 64),
@@ -39,18 +43,34 @@ func newHub(snapshotDir string) *Hub {
 	}
 }
 
+func startStreamCmd(res string) []byte {
+	return []byte(fmt.Sprintf("CMD:START_STREAM:%s", res))
+}
+
 func (h *Hub) run() {
 	for {
 		select {
 		case c := <-h.register:
 			h.mu.Lock()
 			if c.role == RoleCam {
+				if old := h.cam; old != nil && old != c {
+					old.cancel() // kick stale cam connection
+				}
 				h.cam = c
 				log.Println("cam registered")
+				if len(h.viewers) > 0 {
+					c.sendMsg(websocket.MessageText, startStreamCmd(h.lastRes))
+					log.Println("viewers waiting, sent START_STREAM to cam")
+				}
 			} else {
 				h.viewers[c] = true
-				log.Println("viewer registered, sending START_STREAM")
-				c.sendMsg(websocket.MessageText, []byte("CMD:START_STREAM:720p"))
+				if c.res != "" {
+					h.lastRes = c.res
+				}
+				log.Println("viewer registered")
+				if h.cam != nil {
+					h.cam.sendMsg(websocket.MessageText, startStreamCmd(h.lastRes))
+				}
 			}
 			h.mu.Unlock()
 
@@ -89,7 +109,12 @@ func (h *Hub) run() {
 					log.Printf("save snapshot: %v", err)
 					continue
 				}
-				notify := fmt.Sprintf("SNAPSHOT:/snapshots/%s", filepath.Base(path))
+				rel, err := filepath.Rel(h.snapshotDir, path)
+				if err != nil {
+					log.Printf("snapshot rel path: %v", err)
+					continue
+				}
+				notify := fmt.Sprintf("SNAPSHOT:/snapshots/%s", filepath.ToSlash(rel))
 				h.broadcastViewers(websocket.MessageText, []byte(notify))
 			} else {
 				h.broadcastViewers(websocket.MessageText, msg.data)
