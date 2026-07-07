@@ -11,7 +11,10 @@ class WhepClient(
     private val httpClient: OkHttpClient = OkHttpClient()
 ) {
     fun postOffer(offerSdp: String): String? {
-        val body = offerSdp.toRequestBody("application/sdp".toMediaType())
+        // bytes, not String: String.toRequestBody appends "; charset=utf-8"
+        // to Content-Type, WHEP expects exactly "application/sdp"
+        val body = offerSdp.toByteArray(Charsets.UTF_8)
+            .toRequestBody("application/sdp".toMediaType())
         val request = Request.Builder()
             .url(whepUrl)
             .post(body)

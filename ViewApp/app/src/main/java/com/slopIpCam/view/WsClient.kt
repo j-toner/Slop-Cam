@@ -15,6 +15,7 @@ class WsClient(
 ) {
     private val client = OkHttpClient.Builder()
         .retryOnConnectionFailure(true)
+        .pingInterval(15, java.util.concurrent.TimeUnit.SECONDS)
         .build()
     private var ws: WebSocket? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -35,6 +36,9 @@ class WsClient(
                         }
                         override fun onMessage(webSocket: WebSocket, text: String) = onText(text)
                         override fun onMessage(webSocket: WebSocket, bytes: ByteString) = onBinary(bytes.toByteArray())
+                        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                            webSocket.close(1000, null) // ack server-initiated close so onClosed fires
+                        }
                         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                             onDisconnected()
                             latch.complete(Unit)

@@ -68,7 +68,8 @@ class SnapshotAdapter(
 
     override fun getView(pos: Int, convertView: View?, parent: ViewGroup): View {
         val img = (convertView as? ImageView) ?: ImageView(context).apply {
-            layoutParams = AbsListView.LayoutParams(300, 300)
+            val cell = (120 * context.resources.displayMetrics.density).toInt()
+            layoutParams = AbsListView.LayoutParams(cell, cell)
             scaleType = ImageView.ScaleType.CENTER_CROP
         }
         Glide.with(context).load(urls[pos]).into(img)

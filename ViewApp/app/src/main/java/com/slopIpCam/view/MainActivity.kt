@@ -18,18 +18,23 @@ class MainActivity : AppCompatActivity() {
     private lateinit var pttRecorder: PttRecorder
     private var peerConnectionFactory: PeerConnectionFactory? = null
     private var peerConnection: PeerConnection? = null
+    private var webRtcJob: Job? = null
     private lateinit var eglBase: EglBase
+    private lateinit var renderer: SurfaceViewRenderer
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        val wsUrl = (prefs.getString("ctrl_server_url", "ws://100.x.x.x:8080/ws") ?: "") + "?role=viewer"
-        val mediamtxBase = prefs.getString("mediamtx_base_url", "http://100.x.x.x:8889") ?: ""
+        val resolution = prefs.getString("stream_resolution", "720p") ?: "720p"
+        val wsUrl = (prefs.getString("ctrl_server_url", "ws://100.x.x.x:8080/ws")
+            ?: "ws://100.x.x.x:8080/ws") + "?role=viewer&res=$resolution"
+        val mediamtxBase = prefs.getString("mediamtx_base_url", "http://100.x.x.x:8889")
+            ?: "http://100.x.x.x:8889"
 
         eglBase = EglBase.create()
-        val renderer = findViewById<SurfaceViewRenderer>(R.id.webrtcView)
+        renderer = findViewById(R.id.webrtcView)
         renderer.init(eglBase.eglBaseContext, null)
         renderer.setMirror(false)
 
@@ -46,12 +51,10 @@ class MainActivity : AppCompatActivity() {
             url = wsUrl,
             onText = { msg -> handleServerMsg(msg) },
             onConnected = {
-                runOnUiThread { findViewById<TextView>(R.id.tvStatus).text = "Connected" }
-                startWebRtc(mediamtxBase)
+                setStatus("Connected")
+                restartWebRtcIfNeeded(mediamtxBase)
             },
-            onDisconnected = {
-                runOnUiThread { findViewById<TextView>(R.id.tvStatus).text = "Reconnecting..." }
-            }
+            onDisconnected = { setStatus("Reconnecting...") }
         )
         wsClient.connect()
 
@@ -84,65 +87,112 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun startWebRtc(mediamtxBase: String) {
-        scope.launch(Dispatchers.IO) {
-            val whepUrl = "$mediamtxBase/cam/whep"
-            val renderer = findViewById<SurfaceViewRenderer>(R.id.webrtcView)
+    private fun setStatus(text: String) {
+        runOnUiThread { findViewById<TextView>(R.id.tvStatus).text = text }
+    }
 
-            val pc = peerConnectionFactory!!.createPeerConnection(
-                PeerConnection.RTCConfiguration(emptyList()),
-                object : PeerConnection.Observer {
-                    override fun onIceConnectionChange(s: PeerConnection.IceConnectionState) {}
-                    override fun onIceConnectionReceivingChange(receiving: Boolean) {}
-                    override fun onSignalingChange(s: PeerConnection.SignalingState) {}
-                    override fun onIceGatheringChange(s: PeerConnection.IceGatheringState) {}
-                    override fun onIceCandidatesRemoved(c: Array<out IceCandidate>?) {}
-                    override fun onIceCandidate(c: IceCandidate) {}
-                    override fun onAddStream(stream: MediaStream) {
-                        stream.videoTracks.firstOrNull()?.addSink(renderer)
-                    }
-                    override fun onRemoveStream(s: MediaStream?) {}
-                    override fun onDataChannel(d: DataChannel?) {}
-                    override fun onRenegotiationNeeded() {}
-                    override fun onAddTrack(r: RtpReceiver?, s: Array<out MediaStream>?) {}
-                    override fun onConnectionChange(s: PeerConnection.PeerConnectionState) {}
-                }
-            ) ?: return@launch
-            peerConnection = pc
-
-            pc.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO,
-                RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY))
-            pc.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO,
-                RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY))
-
-            val offerDeferred = CompletableDeferred<SessionDescription>()
-            pc.createOffer(object : SdpObserver {
-                override fun onCreateSuccess(sdp: SessionDescription) { offerDeferred.complete(sdp) }
-                override fun onSetSuccess() {}
-                override fun onCreateFailure(e: String?) {}
-                override fun onSetFailure(e: String?) {}
-            }, MediaConstraints())
-            val offerSdp = offerDeferred.await()
-
-            pc.setLocalDescription(object : SdpObserver {
-                override fun onSetSuccess() {}
-                override fun onCreateSuccess(s: SessionDescription?) {}
-                override fun onCreateFailure(e: String?) {}
-                override fun onSetFailure(e: String?) {}
-            }, offerSdp)
-
-            val answerSdp = WhepClient(whepUrl).postOffer(offerSdp.description) ?: return@launch
-            pc.setRemoteDescription(object : SdpObserver {
-                override fun onSetSuccess() {
-                    runOnUiThread { findViewById<TextView>(R.id.tvStatus).text = "Streaming" }
-                }
-                override fun onCreateSuccess(s: SessionDescription?) {}
-                override fun onCreateFailure(e: String?) {}
-                override fun onSetFailure(e: String?) {
-                    android.util.Log.e("MainActivity", "setRemote failed: $e")
-                }
-            }, SessionDescription(SessionDescription.Type.ANSWER, answerSdp))
+    /** Called on every WS (re)connect — reuse a healthy PeerConnection, rebuild a dead one. */
+    private fun restartWebRtcIfNeeded(mediamtxBase: String) {
+        scope.launch {
+            val state = peerConnection?.connectionState()
+            if (state == PeerConnection.PeerConnectionState.CONNECTED ||
+                state == PeerConnection.PeerConnectionState.CONNECTING
+            ) return@launch
+            webRtcJob?.cancelAndJoin()
+            peerConnection?.dispose()
+            peerConnection = null
+            webRtcJob = launch(Dispatchers.IO) { startWebRtc(mediamtxBase) }
         }
+    }
+
+    private suspend fun startWebRtc(mediamtxBase: String) = coroutineScope {
+        val whepUrl = "$mediamtxBase/cam/whep"
+        val factory = peerConnectionFactory ?: return@coroutineScope
+
+        val pc = factory.createPeerConnection(
+            PeerConnection.RTCConfiguration(emptyList()),
+            object : PeerConnection.Observer {
+                override fun onIceConnectionChange(s: PeerConnection.IceConnectionState) {}
+                override fun onIceConnectionReceivingChange(receiving: Boolean) {}
+                override fun onSignalingChange(s: PeerConnection.SignalingState) {}
+                override fun onIceGatheringChange(s: PeerConnection.IceGatheringState) {}
+                override fun onIceCandidatesRemoved(c: Array<out IceCandidate>?) {}
+                override fun onIceCandidate(c: IceCandidate) {}
+                override fun onAddStream(stream: MediaStream) {
+                    // Plan-B era callback, kept as fallback; addSink dedupes
+                    stream.videoTracks.firstOrNull()?.addSink(renderer)
+                }
+                override fun onAddTrack(r: RtpReceiver?, s: Array<out MediaStream>?) {
+                    // Unified Plan delivery path — this is what actually fires
+                    (r?.track() as? VideoTrack)?.addSink(renderer)
+                }
+                override fun onRemoveStream(s: MediaStream?) {}
+                override fun onDataChannel(d: DataChannel?) {}
+                override fun onRenegotiationNeeded() {}
+                override fun onConnectionChange(s: PeerConnection.PeerConnectionState) {
+                    if (s == PeerConnection.PeerConnectionState.CONNECTED) setStatus("Streaming")
+                    else if (s == PeerConnection.PeerConnectionState.FAILED) setStatus("Stream failed")
+                }
+            }
+        ) ?: return@coroutineScope
+        peerConnection = pc
+
+        pc.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO,
+            RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY))
+        pc.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO,
+            RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY))
+
+        val offerDeferred = CompletableDeferred<SessionDescription>()
+        pc.createOffer(object : SdpObserver {
+            override fun onCreateSuccess(sdp: SessionDescription) { offerDeferred.complete(sdp) }
+            override fun onSetSuccess() {}
+            override fun onCreateFailure(e: String?) {
+                offerDeferred.completeExceptionally(RuntimeException("createOffer: $e"))
+            }
+            override fun onSetFailure(e: String?) {}
+        }, MediaConstraints())
+        val offerSdp = try { offerDeferred.await() } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "offer failed", e)
+            return@coroutineScope
+        }
+
+        val localSet = CompletableDeferred<Unit>()
+        pc.setLocalDescription(object : SdpObserver {
+            override fun onSetSuccess() { localSet.complete(Unit) }
+            override fun onCreateSuccess(s: SessionDescription?) {}
+            override fun onCreateFailure(e: String?) {}
+            override fun onSetFailure(e: String?) {
+                localSet.completeExceptionally(RuntimeException("setLocal: $e"))
+            }
+        }, offerSdp)
+        try { localSet.await() } catch (e: Exception) {
+            android.util.Log.e("MainActivity", "setLocal failed", e)
+            return@coroutineScope
+        }
+
+        // cam needs a moment to start publishing after START_STREAM — retry WHEP
+        var answerSdp: String? = null
+        var attempt = 0
+        val whep = WhepClient(whepUrl)
+        while (isActive && answerSdp == null) {
+            answerSdp = whep.postOffer(offerSdp.description)
+            if (answerSdp == null) {
+                attempt++
+                setStatus("Waiting for stream (retry $attempt)...")
+                delay(minOf(1000L * attempt, 10_000L))
+            }
+        }
+        if (answerSdp == null) return@coroutineScope
+
+        pc.setRemoteDescription(object : SdpObserver {
+            override fun onSetSuccess() {}
+            override fun onCreateSuccess(s: SessionDescription?) {}
+            override fun onCreateFailure(e: String?) {}
+            override fun onSetFailure(e: String?) {
+                android.util.Log.e("MainActivity", "setRemote failed: $e")
+                setStatus("Stream failed")
+            }
+        }, SessionDescription(SessionDescription.Type.ANSWER, answerSdp))
     }
 
     private fun handleServerMsg(msg: String) {
@@ -156,8 +206,12 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         wsClient.disconnect()
         pttRecorder.stop()
+        webRtcJob?.cancel()
         peerConnection?.dispose()
+        peerConnection = null
         peerConnectionFactory?.dispose()
+        peerConnectionFactory = null
+        renderer.release()
         eglBase.release()
         scope.cancel()
         super.onDestroy()

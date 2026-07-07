@@ -10,32 +10,38 @@ class PttRecorder(private val onChunk: (ByteArray) -> Unit) {
     private val bufferSize = AudioRecord.getMinBufferSize(
         sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
     )
-    private var record: AudioRecord? = null
     private var job: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     fun start() {
-        record = AudioRecord(
+        if (job?.isActive == true) return
+        val rec = AudioRecord(
             MediaRecorder.AudioSource.MIC,
             sampleRate,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
             bufferSize
         )
-        record!!.startRecording()
+        rec.startRecording()
+        // the coroutine owns rec for its whole lifetime — no shared mutable
+        // reference for stop() to null out mid-read
         job = scope.launch {
-            val buf = ByteArray(bufferSize)
-            while (isActive) {
-                val read = record!!.read(buf, 0, buf.size)
-                if (read > 0) onChunk(buf.copyOf(read))
+            try {
+                val buf = ByteArray(bufferSize)
+                while (isActive) {
+                    val read = rec.read(buf, 0, buf.size)
+                    if (read > 0) onChunk(buf.copyOf(read))
+                    else if (read < 0) break
+                }
+            } finally {
+                try { rec.stop() } catch (_: IllegalStateException) {}
+                rec.release()
             }
         }
     }
 
     fun stop() {
         job?.cancel()
-        record?.stop()
-        record?.release()
-        record = null
+        job = null
     }
 }
