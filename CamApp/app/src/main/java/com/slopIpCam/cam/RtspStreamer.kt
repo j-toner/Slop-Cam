@@ -31,6 +31,11 @@ class RtspStreamer(
         if (stream.isStreaming) stream.stopStream()
     }
 
+    /** Grab a frame from the live stream's GL pipeline. */
+    fun takePhoto(cb: (android.graphics.Bitmap) -> Unit) {
+        stream.getGlInterface().takePhoto { bmp -> cb(bmp) }
+    }
+
     /** Torch control while the stream owns the camera device. */
     fun setTorch(on: Boolean): Boolean {
         val source = stream.videoSource as? Camera2Source ?: return false

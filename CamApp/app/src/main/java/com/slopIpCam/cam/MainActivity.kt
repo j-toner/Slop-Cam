@@ -48,6 +48,12 @@ class MainActivity : AppCompatActivity() {
                 .edit().putBoolean("motion_watch", on).apply()
         }
 
+        findViewById<Button>(R.id.btnSnap).setOnClickListener {
+            if (CamService.running) CamService.snapshot(this)
+            else android.widget.Toast.makeText(
+                this, "Start the camera service first", android.widget.Toast.LENGTH_SHORT).show()
+        }
+
         findViewById<Button>(R.id.btnSettings).setOnClickListener {
             startActivity(android.content.Intent(this, SettingsActivity::class.java))
         }

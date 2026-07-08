@@ -25,6 +25,10 @@
             android:layout_width="wrap_content" android:layout_height="wrap_content"
             android:text="PTT" />
 
+        <Button android:id="@+id/btnSnap"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="📷" />
+
         <Button android:id="@+id/btnSnapshots"
             android:layout_width="wrap_content" android:layout_height="wrap_content"
             android:text="Snaps" />

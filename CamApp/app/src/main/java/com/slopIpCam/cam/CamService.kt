@@ -33,6 +33,7 @@ class CamService : Service(), LifecycleOwner {
 
     private var cameraProvider: ProcessCameraProvider? = null
     private var lastSnapshotMs = 0L
+    @Volatile private var oneShotSnapshot = false
 
     companion object {
         const val CHANNEL_ID = "slopIpCam"
@@ -42,8 +43,11 @@ class CamService : Service(), LifecycleOwner {
         // while nothing is running — this flag is the live truth for the UI
         @Volatile var running = false
             private set
+        const val EXTRA_TAKE_SNAPSHOT = "take_snapshot"
         fun start(ctx: Context) = ctx.startForegroundService(Intent(ctx, CamService::class.java))
         fun stop(ctx: Context) = ctx.stopService(Intent(ctx, CamService::class.java))
+        fun snapshot(ctx: Context) = ctx.startService(
+            Intent(ctx, CamService::class.java).putExtra(EXTRA_TAKE_SNAPSHOT, true))
     }
 
     override fun onCreate() {
@@ -86,7 +90,25 @@ class CamService : Service(), LifecycleOwner {
         updateNotification("Connecting...")
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.getBooleanExtra(EXTRA_TAKE_SNAPSHOT, false) == true) takeSnapshot()
+        return START_STICKY
+    }
+
+    // posted to the main handler so it serializes after a pending
+    // START_STREAM — otherwise isStreaming reads stale mid-startup
+    private fun takeSnapshot() = handler.post {
+        val streamer = rtspStreamer
+        if (streamer != null && streamer.isStreaming) {
+            // stream owns the camera — pull the frame from the GL pipeline
+            streamer.takePhoto { bmp -> analysisExecutor.execute { sendSnapshot(bmp) } }
+        } else {
+            // analyzer sends the next frame; if the camera isn't bound, bind it —
+            // the poll loop unbinds again within 2s when motion watch is off
+            oneShotSnapshot = true
+            if (cameraProvider == null) startMotionWatch()
+        }
+    }
 
     private fun handleCommand(msg: String, rtspUrl: String?) {
         when {
@@ -111,6 +133,7 @@ class CamService : Service(), LifecycleOwner {
                     // poll loop re-enables motion watch if it's switched on
                 }
             }
+            msg == "CMD:SNAPSHOT" -> takeSnapshot()
             msg == "CMD:FLASHLIGHT_ON" -> setTorch(true)
             msg == "CMD:FLASHLIGHT_OFF" -> setTorch(false)
         }
@@ -141,7 +164,8 @@ class CamService : Service(), LifecycleOwner {
                     .getBoolean("motion_watch", false)
                 val streaming = rtspStreamer?.isStreaming == true
                 if (on && !streaming && cameraProvider == null) startMotionWatch()
-                else if ((!on || streaming) && cameraProvider != null) stopMotionWatch()
+                else if ((!on || streaming) && cameraProvider != null && !oneShotSnapshot)
+                    stopMotionWatch() // keep camera bound while a one-shot is pending
                 handler.postDelayed(this, 2000)
             }
         }
@@ -155,7 +179,14 @@ class CamService : Service(), LifecycleOwner {
 
         val providerFuture = ProcessCameraProvider.getInstance(this)
         providerFuture.addListener({
-            if (rtspStreamer?.isStreaming == true) return@addListener // lost the race to a stream start
+            val streamer = rtspStreamer
+            if (streamer?.isStreaming == true) { // lost the race to a stream start
+                if (oneShotSnapshot) { // redirect a pending one-shot to the stream
+                    oneShotSnapshot = false
+                    streamer.takePhoto { bmp -> analysisExecutor.execute { sendSnapshot(bmp) } }
+                }
+                return@addListener
+            }
             cameraProvider = providerFuture.get()
             val analysis = ImageAnalysis.Builder()
                 .setTargetResolution(android.util.Size(640, 480))
@@ -165,6 +196,10 @@ class CamService : Service(), LifecycleOwner {
             var prevLuma: ByteArray? = null
             analysis.setAnalyzer(analysisExecutor) { proxy ->
                 try {
+                    if (oneShotSnapshot) {
+                        oneShotSnapshot = false
+                        sendSnapshot(proxy.toBitmap()) // manual snap skips the interval limit
+                    }
                     val plane = proxy.planes[0]
                     val buf = plane.buffer
                     val luma = ByteArray(buf.remaining())

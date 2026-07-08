@@ -12,6 +12,9 @@
     <Switch android:id="@+id/switchMotion" android:layout_width="wrap_content"
         android:layout_height="wrap_content" android:text="Motion Watch" />
 
+    <Button android:id="@+id/btnSnap" android:layout_width="wrap_content"
+        android:layout_height="wrap_content" android:text="Take Snapshot" />
+
     <Button android:id="@+id/btnSettings" android:layout_width="wrap_content"
         android:layout_height="wrap_content" android:text="Settings" />
 </LinearLayout>

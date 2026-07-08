@@ -35,7 +35,7 @@ func pruneSnapshots(dir string, retentionDays int, now time.Time) error {
 
 func listSnapshots(dir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var files []string
+		files := []string{} // marshal as [] instead of null when empty
 		_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 			if err != nil || info.IsDir() {
 				return nil

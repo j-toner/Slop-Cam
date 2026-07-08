@@ -79,6 +79,11 @@ class MainActivity : AppCompatActivity() {
             true
         }
 
+        findViewById<Button>(R.id.btnSnap).setOnClickListener {
+            wsClient.sendText("CMD:SNAPSHOT")
+            Toast.makeText(this, "Snapshot requested", Toast.LENGTH_SHORT).show()
+        }
+
         findViewById<Button>(R.id.btnSnapshots).setOnClickListener {
             startActivity(Intent(this, SnapshotsActivity::class.java))
         }
