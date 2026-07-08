@@ -37,6 +37,7 @@ class CamService : Service(), LifecycleOwner {
     companion object {
         const val CHANNEL_ID = "slopIpCam"
         const val NOTIF_ID = 1
+        const val KEY_STATUS = "service_status"
         fun start(ctx: Context) = ctx.startForegroundService(Intent(ctx, CamService::class.java))
         fun stop(ctx: Context) = ctx.stopService(Intent(ctx, CamService::class.java))
     }
@@ -77,6 +78,7 @@ class CamService : Service(), LifecycleOwner {
         )
         wsClient.connect()
         startMotionWatchPolling()
+        updateNotification("Connecting...")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
@@ -209,6 +211,9 @@ class CamService : Service(), LifecycleOwner {
     }
 
     fun updateNotification(status: String) {
+        // MainActivity mirrors this via a preference listener
+        getSharedPreferences("runtime", MODE_PRIVATE)
+            .edit().putString(KEY_STATUS, status).apply()
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.notify(NOTIF_ID, buildNotification(status))
     }
@@ -219,6 +224,8 @@ class CamService : Service(), LifecycleOwner {
     }
 
     override fun onDestroy() {
+        getSharedPreferences("runtime", MODE_PRIVATE)
+            .edit().putString(KEY_STATUS, "Off").apply()
         pollRunnable?.let { handler.removeCallbacks(it) }
         pollRunnable = null
         stopMotionWatch()

@@ -16,6 +16,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var serviceSwitch: Switch
     private lateinit var motionSwitch: Switch
 
+    // strong reference required: SharedPreferences holds listeners weakly
+    private val statusListener =
+        android.content.SharedPreferences.OnSharedPreferenceChangeListener { prefs, key ->
+            if (key == CamService.KEY_STATUS) {
+                statusText.text = "Status: ${prefs.getString(key, "Off")}"
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -23,6 +31,12 @@ class MainActivity : AppCompatActivity() {
         statusText = findViewById(R.id.tvStatus)
         serviceSwitch = findViewById(R.id.switchService)
         motionSwitch = findViewById(R.id.switchMotion)
+
+        // reflect a service that is already running before attaching the
+        // listener, so the programmatic setChecked doesn't restart it
+        val status = runtimePrefs().getString(CamService.KEY_STATUS, "Off") ?: "Off"
+        serviceSwitch.isChecked = status != "Off"
+        motionSwitch.isChecked = runtimePrefs().getBoolean("motion_watch", false)
 
         serviceSwitch.setOnCheckedChangeListener { _, on ->
             if (on) startServiceWithPermissions() else CamService.stop(this)
@@ -40,6 +54,19 @@ class MainActivity : AppCompatActivity() {
         if (intent.getBooleanExtra(EXTRA_AUTO_START, false)) {
             serviceSwitch.isChecked = true // triggers startServiceWithPermissions
         }
+    }
+
+    private fun runtimePrefs() = getSharedPreferences("runtime", MODE_PRIVATE)
+
+    override fun onStart() {
+        super.onStart()
+        statusText.text = "Status: ${runtimePrefs().getString(CamService.KEY_STATUS, "Off")}"
+        runtimePrefs().registerOnSharedPreferenceChangeListener(statusListener)
+    }
+
+    override fun onStop() {
+        runtimePrefs().unregisterOnSharedPreferenceChangeListener(statusListener)
+        super.onStop()
     }
 
     private fun startServiceWithPermissions() {
