@@ -33,9 +33,10 @@ class MainActivity : AppCompatActivity() {
         motionSwitch = findViewById(R.id.switchMotion)
 
         // reflect a service that is already running before attaching the
-        // listener, so the programmatic setChecked doesn't restart it
-        val status = runtimePrefs().getString(CamService.KEY_STATUS, "Off") ?: "Off"
-        serviceSwitch.isChecked = status != "Off"
+        // listener, so the programmatic setChecked doesn't restart it;
+        // CamService.running (not the status pref) is the live truth —
+        // the pref goes stale if the process died mid-"Reconnecting..."
+        serviceSwitch.isChecked = CamService.running
         motionSwitch.isChecked = runtimePrefs().getBoolean("motion_watch", false)
 
         serviceSwitch.setOnCheckedChangeListener { _, on ->
@@ -52,7 +53,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (intent.getBooleanExtra(EXTRA_AUTO_START, false)) {
-            serviceSwitch.isChecked = true // triggers startServiceWithPermissions
+            serviceSwitch.isChecked = true // no-op if already checked
+            startServiceWithPermissions()  // so start explicitly, idempotent
         }
     }
 
@@ -60,7 +62,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
-        statusText.text = "Status: ${runtimePrefs().getString(CamService.KEY_STATUS, "Off")}"
+        val status = if (CamService.running)
+            runtimePrefs().getString(CamService.KEY_STATUS, "Off") else "Off"
+        statusText.text = "Status: $status"
         runtimePrefs().registerOnSharedPreferenceChangeListener(statusListener)
     }
 

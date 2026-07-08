@@ -38,11 +38,16 @@ class CamService : Service(), LifecycleOwner {
         const val CHANNEL_ID = "slopIpCam"
         const val NOTIF_ID = 1
         const val KEY_STATUS = "service_status"
+        // the status pref survives process death, so it can read "Reconnecting..."
+        // while nothing is running — this flag is the live truth for the UI
+        @Volatile var running = false
+            private set
         fun start(ctx: Context) = ctx.startForegroundService(Intent(ctx, CamService::class.java))
         fun stop(ctx: Context) = ctx.stopService(Intent(ctx, CamService::class.java))
     }
 
     override fun onCreate() {
+        running = true
         lifecycleRegistry.currentState = Lifecycle.State.STARTED
         super.onCreate()
         createNotificationChannel()
@@ -224,6 +229,7 @@ class CamService : Service(), LifecycleOwner {
     }
 
     override fun onDestroy() {
+        running = false
         getSharedPreferences("runtime", MODE_PRIVATE)
             .edit().putString(KEY_STATUS, "Off").apply()
         pollRunnable?.let { handler.removeCallbacks(it) }
