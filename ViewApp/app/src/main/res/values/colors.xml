@@ -7,4 +7,5 @@
     <color name="text_dim">#8C96A8</color>
     <color name="neon">#00E5FF</color>
     <color name="neon_faint">#2E00E5FF</color>
+    <color name="rec_red">#FF1744</color>
 </resources>

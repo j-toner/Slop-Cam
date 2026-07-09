@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -111,9 +112,15 @@ func (r *Recorder) buildCmd(fps, height string) *exec.Cmd {
 		"-rtsp_transport", "tcp",
 		"-i", r.rtspURL,
 		// scale the *short* side to the target so portrait and landscape
-		// sources keep comparable detail (854x480 or 480x854 for "480p")
+		// sources keep comparable detail (854x480 or 480x854 for "480p"),
+		// then burn a wall-clock timestamp along the bottom edge
 		"-vf", "fps=" + fps + ",scale=" + height + ":" + height +
-			":force_original_aspect_ratio=increase:force_divisible_by=2",
+			":force_original_aspect_ratio=increase:force_divisible_by=2" +
+			// single quotes shield the %{} block from the filtergraph
+			// parser so drawtext itself gets to expand the \: sequence
+			",drawtext=fontfile=/usr/share/fonts/dejavu/DejaVuSans.ttf" +
+			":text='%{localtime\\:%F %T}':fontcolor=white@0.9:fontsize=h/24" +
+			":box=1:boxcolor=black@0.4:boxborderw=6:x=10:y=h-th-10",
 		"-c:v", "libx265", "-preset", "medium", "-crf", r.crf,
 		"-tag:v", "hvc1",
 		"-g", "60", // keyframe cadence so hourly segments can actually split
@@ -147,6 +154,115 @@ func listRecordings(dir string) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(files)
 	}
+}
+
+// ClipRecorder captures one clip at a time from the live stream with
+// -c copy (full stream quality, negligible CPU): manual recordings from
+// the viewer (unbounded, stopped by command) and motion-triggered clips
+// (bounded by maxSeconds).
+type ClipRecorder struct {
+	rtspURL string
+	dir     string
+
+	mu     sync.Mutex
+	active bool
+	gen    int
+	cmd    *exec.Cmd
+}
+
+func newClipRecorder(rtspURL, dir string) *ClipRecorder {
+	return &ClipRecorder{rtspURL: rtspURL, dir: dir}
+}
+
+// Start begins capturing a clip; returns false if one is already running.
+// maxSeconds <= 0 means unbounded (until Stop). onDone runs after the clip
+// finishes for any reason.
+func (c *ClipRecorder) Start(kind string, maxSeconds int, onDone func()) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.active {
+		return false
+	}
+	c.active = true
+	c.gen++
+	go c.run(c.gen, kind, maxSeconds, onDone)
+	log.Printf("clip recorder: started (%s, max %ds)", kind, maxSeconds)
+	return true
+}
+
+func (c *ClipRecorder) Active() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.active
+}
+
+func (c *ClipRecorder) Stop() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.active {
+		return
+	}
+	c.active = false
+	if c.cmd != nil && c.cmd.Process != nil {
+		c.cmd.Process.Signal(syscall.SIGINT)
+	}
+	log.Println("clip recorder: stopped")
+}
+
+func (c *ClipRecorder) run(gen int, kind string, maxSeconds int, onDone func()) {
+	defer func() {
+		c.mu.Lock()
+		if c.gen == gen {
+			c.active = false
+		}
+		c.mu.Unlock()
+		onDone()
+	}()
+
+	// the cam may still be spinning up its stream — retry the connect
+	for attempt := 0; attempt < 15; attempt++ {
+		c.mu.Lock()
+		if !c.active || c.gen != gen {
+			c.mu.Unlock()
+			return
+		}
+		out := filepath.Join(c.dir,
+			"clip_"+kind+"_"+time.Now().Format("2006-01-02_15-04-05")+".mp4")
+		args := []string{
+			"-hide_banner", "-loglevel", "error",
+			"-rtsp_transport", "tcp",
+			"-i", c.rtspURL,
+			"-c", "copy",
+			"-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+		}
+		if maxSeconds > 0 {
+			args = append(args, "-t", strconv.Itoa(maxSeconds))
+		}
+		args = append(args, "-f", "mp4", out)
+		cmd := exec.Command("ffmpeg", args...)
+		cmd.Stderr = os.Stderr
+		err := cmd.Start()
+		if err == nil {
+			c.cmd = cmd
+		}
+		c.mu.Unlock()
+
+		if err != nil {
+			log.Printf("clip recorder: ffmpeg start: %v", err)
+			return
+		}
+		werr := cmd.Wait()
+		if info, serr := os.Stat(out); serr == nil && info.Size() > 50*1024 {
+			log.Printf("clip recorder: wrote %s (%d bytes)", filepath.Base(out), info.Size())
+			return // got real footage, even if the stream cut out mid-clip
+		}
+		os.Remove(out) // connect failed / empty — retry while the cam spins up
+		if werr != nil {
+			log.Printf("clip recorder: attempt %d: %v", attempt+1, werr)
+		}
+		time.Sleep(2 * time.Second)
+	}
+	log.Println("clip recorder: gave up waiting for the stream")
 }
 
 // remuxFinishedSegments rewrites completed fragmented-mp4 segments as

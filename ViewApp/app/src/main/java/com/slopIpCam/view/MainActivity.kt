@@ -28,6 +28,7 @@ class MainActivity : AppCompatActivity() {
     private var wsClient: WsClient? = null
     private var activeWsUrl: String? = null
     private var activeMediamtxBase: String? = null
+    private var manualRecording = false
     private lateinit var pttRecorder: PttRecorder
     private var peerConnectionFactory: PeerConnectionFactory? = null
     private var peerConnection: PeerConnection? = null
@@ -82,6 +83,20 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Snapshot requested", Toast.LENGTH_SHORT).show()
         }
 
+        findViewById<Button>(R.id.btnRecord).setOnClickListener { btn ->
+            manualRecording = !manualRecording
+            wsClient?.sendText(if (manualRecording) "CMD:RECORD_START" else "CMD:RECORD_STOP")
+            (btn as Button).apply {
+                text = if (manualRecording) "⏺ REC" else "⏺"
+                setTextColor(getColor(
+                    if (manualRecording) R.color.rec_red else R.color.text))
+            }
+        }
+
+        findViewById<Button>(R.id.btnLens).setOnClickListener {
+            wsClient?.sendText("CMD:SWITCH_LENS")
+        }
+
         findViewById<Button>(R.id.btnSnapshots).setOnClickListener {
             startActivity(Intent(this, SnapshotsActivity::class.java))
         }
@@ -128,6 +143,12 @@ class MainActivity : AppCompatActivity() {
             wsClient?.sendText(
                 if (prefs.getBoolean("motion_snaps", false)) "CMD:MOTION_ON"
                 else "CMD:MOTION_OFF"
+            )
+        }
+        if (prefs.contains("motion_record")) {
+            wsClient?.sendText(
+                if (prefs.getBoolean("motion_record", false)) "CMD:MOTION_REC_ON"
+                else "CMD:MOTION_REC_OFF"
             )
         }
         if (prefs.contains("security_mode")) {
@@ -347,6 +368,10 @@ class MainActivity : AppCompatActivity() {
                 // rather than waiting ~15s for ICE to notice the drop
                 setStatus("Cam restarting stream...")
                 restartStream()
+            }
+            msg.startsWith("EVENT:LENS:") -> runOnUiThread {
+                Toast.makeText(this, "Lens: ${msg.substringAfterLast(':')}",
+                    Toast.LENGTH_SHORT).show()
             }
             msg == "EVENT:MOTION" -> {
                 val prefs = PreferenceManager.getDefaultSharedPreferences(this)

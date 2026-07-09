@@ -62,6 +62,18 @@
             android:layout_marginStart="8dp"
             android:text="📷" />
 
+        <Button android:id="@+id/btnRecord"
+            style="@style/ControlButton"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:text="⏺" />
+
+        <Button android:id="@+id/btnLens"
+            style="@style/ControlButton"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:text="Lens" />
+
         <Button android:id="@+id/btnSnapshots"
             style="@style/ControlButton"
             android:layout_width="wrap_content" android:layout_height="wrap_content"

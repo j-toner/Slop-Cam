@@ -26,6 +26,7 @@ class SnapshotsActivity : AppCompatActivity() {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var urls: List<String> = emptyList()
     private var showingClips = false
+    private val selected = linkedSetOf<String>()
     private lateinit var httpBase: String
     private lateinit var grid: GridView
     private lateinit var viewer: FrameLayout
@@ -58,17 +59,29 @@ class SnapshotsActivity : AppCompatActivity() {
         findViewById<TextView>(R.id.tabClips).setOnClickListener { switchTab(true) }
 
         grid.setOnItemClickListener { _, _, pos, _ ->
-            if (showingClips) openClip(urls[pos]) else openImage(urls[pos])
+            when {
+                selected.isNotEmpty() -> toggleSelection(urls[pos])
+                showingClips -> openClip(urls[pos])
+                else -> openImage(urls[pos])
+            }
         }
+        grid.setOnItemLongClickListener { _, _, pos, _ ->
+            toggleSelection(urls[pos])
+            true
+        }
+        findViewById<TextView>(R.id.btnDelete).setOnClickListener { deleteSelected() }
         findViewById<TextView>(R.id.btnCloseViewer).setOnClickListener { closeViewer() }
 
-        // back closes the fullscreen viewer first, then the activity
+        // back closes the fullscreen viewer, then selection mode, then leaves
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (viewer.visibility == View.VISIBLE) closeViewer()
-                else {
-                    isEnabled = false
-                    onBackPressedDispatcher.onBackPressed()
+                when {
+                    viewer.visibility == View.VISIBLE -> closeViewer()
+                    selected.isNotEmpty() -> clearSelection()
+                    else -> {
+                        isEnabled = false
+                        onBackPressedDispatcher.onBackPressed()
+                    }
                 }
             }
         })
@@ -80,13 +93,50 @@ class SnapshotsActivity : AppCompatActivity() {
     private fun switchTab(clips: Boolean) {
         if (clips == showingClips) return
         showingClips = clips
+        clearSelection()
         val on = getColor(R.color.neon)
         val off = getColor(R.color.text_dim)
         findViewById<TextView>(R.id.tabSnaps).setTextColor(if (clips) off else on)
         findViewById<TextView>(R.id.tabClips).setTextColor(if (clips) on else off)
         urls = emptyList()
-        grid.adapter = SnapshotAdapter(this, urls, showingClips)
+        grid.adapter = SnapshotAdapter(this, urls, showingClips, selected)
         loadItems {}
+    }
+
+    private fun toggleSelection(url: String) {
+        if (!selected.remove(url)) selected.add(url)
+        val btn = findViewById<TextView>(R.id.btnDelete)
+        btn.visibility = if (selected.isEmpty()) View.GONE else View.VISIBLE
+        btn.text = "🗑 ${selected.size}"
+        (grid.adapter as? SnapshotAdapter)?.notifyDataSetChanged()
+    }
+
+    private fun clearSelection() {
+        selected.clear()
+        findViewById<TextView>(R.id.btnDelete).visibility = View.GONE
+        (grid.adapter as? SnapshotAdapter)?.notifyDataSetChanged()
+    }
+
+    private fun deleteSelected() {
+        val doomed = selected.toList()
+        scope.launch {
+            val failures = withContext(Dispatchers.IO) {
+                doomed.count { url ->
+                    try {
+                        !client.newCall(Request.Builder().url(url).delete().build())
+                            .execute().use { it.isSuccessful }
+                    } catch (e: Exception) {
+                        true
+                    }
+                }
+            }
+            if (failures > 0) {
+                Toast.makeText(this@SnapshotsActivity,
+                    "$failures delete(s) failed", Toast.LENGTH_SHORT).show()
+            }
+            clearSelection()
+            loadItems {}
+        }
     }
 
     private fun openImage(url: String) {
@@ -139,7 +189,7 @@ class SnapshotsActivity : AppCompatActivity() {
             }
             if (forClips == showingClips) { // tab may have switched mid-fetch
                 urls = fetched
-                grid.adapter = SnapshotAdapter(this@SnapshotsActivity, urls, showingClips)
+                grid.adapter = SnapshotAdapter(this@SnapshotsActivity, urls, showingClips, selected)
                 findViewById<TextView>(R.id.tvCount).text = urls.size.toString()
             }
             onDone()
@@ -157,7 +207,8 @@ class SnapshotsActivity : AppCompatActivity() {
 class SnapshotAdapter(
     ctx: android.content.Context,
     private val urls: List<String>,
-    private val clips: Boolean = false
+    private val clips: Boolean = false,
+    private val selected: Set<String> = emptySet()
 ) : BaseAdapter() {
     private val context = ctx
 
@@ -166,26 +217,33 @@ class SnapshotAdapter(
     override fun getItemId(pos: Int) = pos.toLong()
 
     override fun getView(pos: Int, convertView: View?, parent: ViewGroup): View {
+        val view: View
         if (clips) {
-            val view = convertView ?: LayoutInflater.from(context)
+            view = convertView ?: LayoutInflater.from(context)
                 .inflate(R.layout.item_clip, parent, false)
             view.findViewById<TextView>(R.id.tvClipDate).text = clipLabel(urls[pos])
-            return view
+        } else {
+            val img = (convertView as? ImageView)
+                ?: LayoutInflater.from(context)
+                    .inflate(R.layout.item_snapshot, parent, false) as ImageView
+            Glide.with(context).load(urls[pos]).into(img)
+            view = img
         }
-        val img = (convertView as? ImageView)
-            ?: LayoutInflater.from(context)
-                .inflate(R.layout.item_snapshot, parent, false) as ImageView
-        Glide.with(context).load(urls[pos]).into(img)
-        return img
+        view.alpha = if (urls[pos] in selected) 0.35f else 1f
+        return view
     }
 
-    // ".../cam_2026-07-09_06-25-30.mp4" -> "2026-07-09\n06:25"
+    private val stamp = Regex("""(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})""")
+
+    // "clip_motion_2026-07-09_17-30-01.mp4" -> "motion 2026-07-09\n17:30"
     private fun clipLabel(url: String): String {
         val name = url.substringAfterLast('/')
-            .removePrefix("cam_").removeSuffix(".mp4")
-        val parts = name.split("_")
-        if (parts.size != 2) return name
-        val time = parts[1].split("-")
-        return parts[0] + "\n" + if (time.size == 3) "${time[0]}:${time[1]}" else parts[1]
+        val m = stamp.find(name) ?: return name.removeSuffix(".mp4")
+        val kind = when {
+            name.startsWith("clip_motion") -> "motion "
+            name.startsWith("clip_manual") -> "manual "
+            else -> ""
+        }
+        return "$kind${m.groupValues[1]}\n${m.groupValues[2]}:${m.groupValues[3]}"
     }
 }

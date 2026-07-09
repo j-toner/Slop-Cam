@@ -17,6 +17,8 @@ services:
       - RECORD_DIR=/recordings
       # mediamtx binds the Tailscale IP (see mediamtx.yml), not loopback
       - RTSP_URL=rtsp://${TAILSCALE_IP}:8554/cam
+      # local wall-clock for the burned-in recording timestamps
+      - TZ=${TZ:-UTC}
     volumes:
       - /data/snapshots:/data/snapshots
       - ./recordings:/recordings

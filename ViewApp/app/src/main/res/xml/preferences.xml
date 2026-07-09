@@ -32,6 +32,11 @@
             app:title="Motion notifications"
             app:summary="Notify this phone when motion is detected"
             app:defaultValue="false" />
+        <SwitchPreferenceCompat
+            app:key="motion_record"
+            app:title="Motion recording"
+            app:summary="Record a 10s full-quality clip on motion; keeps going while motion continues. Needs motion snapshots on."
+            app:defaultValue="false" />
     </PreferenceCategory>
 
     <PreferenceCategory app:title="Security recording">

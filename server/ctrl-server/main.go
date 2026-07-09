@@ -4,8 +4,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -69,6 +71,7 @@ func main() {
 
 	hub := newHub(snapshotDir)
 	hub.recorder = newRecorder(rtspURL, recordDir, recordCrf)
+	hub.clip = newClipRecorder(rtspURL, recordDir)
 	hub.stateFile = filepath.Join(recordDir, ".security.json")
 	hub.loadSecurityState()
 	go hub.run()
@@ -78,12 +81,13 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", wsHandler(hub))
+	// FileServer supports Range requests, so video seeking works;
+	// DELETE removes the addressed file (tailnet-only exposure)
 	mux.Handle("/snapshots/", http.StripPrefix("/snapshots/",
-		http.FileServer(http.Dir(filepath.Clean(snapshotDir)))))
+		filesWithDelete(snapshotDir)))
 	mux.HandleFunc("/snapshots", listSnapshots(snapshotDir))
-	// FileServer supports Range requests, so video seeking works
 	mux.Handle("/recordings/", http.StripPrefix("/recordings/",
-		http.FileServer(http.Dir(filepath.Clean(recordDir)))))
+		filesWithDelete(recordDir)))
 	mux.HandleFunc("/recordings", listRecordings(recordDir))
 
 	srv := &http.Server{
@@ -93,6 +97,36 @@ func main() {
 	}
 	log.Printf("ctrl-server listening on %s", addr)
 	log.Fatal(srv.ListenAndServe())
+}
+
+// filesWithDelete serves files from dir and honors DELETE on individual
+// files. Paths are jailed to dir; only regular files can be removed.
+func filesWithDelete(dir string) http.Handler {
+	root := filepath.Clean(dir)
+	fs := http.FileServer(http.Dir(root))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			fs.ServeHTTP(w, r)
+			return
+		}
+		target := filepath.Join(root, filepath.FromSlash(path.Clean("/"+r.URL.Path)))
+		rel, err := filepath.Rel(root, target)
+		if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+			http.Error(w, "bad path", http.StatusBadRequest)
+			return
+		}
+		info, err := os.Stat(target)
+		if err != nil || info.IsDir() {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		if err := os.Remove(target); err != nil {
+			http.Error(w, "delete failed", http.StatusInternalServerError)
+			return
+		}
+		log.Printf("deleted %s", rel)
+		w.WriteHeader(http.StatusNoContent)
+	})
 }
 
 func pruneLoop(dir string, retentionDays int) {

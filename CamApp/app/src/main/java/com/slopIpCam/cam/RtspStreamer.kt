@@ -1,6 +1,8 @@
 package com.slopIpCam.cam
 
 import android.content.Context
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.util.Log
 import com.pedro.common.ConnectChecker
 import com.pedro.encoder.input.sources.video.Camera2Source
@@ -47,6 +49,36 @@ class RtspStreamer(
     /** Grab a frame from the live stream's GL pipeline. */
     fun takePhoto(cb: (android.graphics.Bitmap) -> Unit) {
         stream.getGlInterface().takePhoto { bmp -> cb(bmp) }
+    }
+
+    /**
+     * Toggle between the main and ultra-wide back lenses while streaming.
+     * Widest = shortest focal length. Returns the label of the lens now in
+     * use, or null if switching isn't possible right now.
+     */
+    fun toggleLens(): String? {
+        if (!stream.isStreaming) return null
+        val source = stream.videoSource as? Camera2Source ?: return null
+        val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val backIds = cm.cameraIdList.filter {
+            cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) ==
+                CameraCharacteristics.LENS_FACING_BACK
+        }
+        if (backIds.size < 2) return null
+        val sorted = backIds.sortedBy {
+            cm.getCameraCharacteristics(it)
+                .get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                ?.minOrNull() ?: Float.MAX_VALUE
+        }
+        val wide = sorted.first()
+        val next = if (source.getCurrentCameraId() == wide) sorted.last() else wide
+        return try {
+            source.openCameraId(next)
+            if (next == wide) "ultra-wide" else "main"
+        } catch (e: Exception) {
+            Log.e("RtspStreamer", "lens switch failed: ${e.message}")
+            null
+        }
     }
 
     /** Torch control while the stream owns the camera device. */

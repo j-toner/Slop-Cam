@@ -41,6 +41,10 @@ class CamService : Service(), LifecycleOwner {
     // to restart it when the phone is turned
     private var deviceRotation = -1
     private var appliedRotation = -1
+    // physical clockwise angle of the device (0/90/180/270) from the
+    // orientation sensor — display rotation is frozen for a service
+    @Volatile private var devicePhysicalDeg = 0
+    private var lastMotionEventMs = 0L
     private var activeRtspUrl: String? = null
     private var activeWidth = 1280
     private var activeHeight = 720
@@ -113,6 +117,7 @@ class CamService : Service(), LifecycleOwner {
             override fun onOrientationChanged(deg: Int) {
                 if (deg == ORIENTATION_UNKNOWN) return
                 val quantized = ((deg + 45) / 90 % 4) * 90
+                devicePhysicalDeg = quantized
                 // sensor degrees are clockwise from natural portrait; the
                 // encoder wants 90 for portrait, 0/180 for landscape
                 val rotation = (quantized + 90) % 360
@@ -205,6 +210,10 @@ class CamService : Service(), LifecycleOwner {
             // applies the pref within 2s, same as the local switch
             msg == "CMD:MOTION_ON" -> setMotionWatchPref(true)
             msg == "CMD:MOTION_OFF" -> setMotionWatchPref(false)
+            msg == "CMD:SWITCH_LENS" -> handler.post {
+                val lens = rtspStreamer?.toggleLens()
+                if (lens != null) wsClient.sendText("EVENT:LENS:$lens")
+            }
         }
     }
 
@@ -272,7 +281,8 @@ class CamService : Service(), LifecycleOwner {
                 try {
                     if (oneShotSnapshot) {
                         oneShotSnapshot = false
-                        sendSnapshot(proxy.toBitmap()) // manual snap skips the interval limit
+                        // manual snap skips the interval limit
+                        sendSnapshot(proxy.toBitmap(), proxy.imageInfo.rotationDegrees)
                     }
                     val plane = proxy.planes[0]
                     val buf = plane.buffer
@@ -283,11 +293,15 @@ class CamService : Service(), LifecycleOwner {
                         motionDetector.analyze(luma, prev, proxy.width, proxy.height, plane.rowStride)
                     ) {
                         val now = System.currentTimeMillis()
+                        // motion events drive notifications and motion-record
+                        // clips; throttled independently of snapshots
+                        if (now - lastMotionEventMs >= 5000) {
+                            lastMotionEventMs = now
+                            wsClient.sendText("EVENT:MOTION")
+                        }
                         if (now - lastSnapshotMs >= intervalMs) {
                             lastSnapshotMs = now
-                            // lets viewers notify on motion, not on manual snaps
-                            wsClient.sendText("EVENT:MOTION")
-                            sendSnapshot(proxy.toBitmap())
+                            sendSnapshot(proxy.toBitmap(), proxy.imageInfo.rotationDegrees)
                         }
                     }
                     prevLuma = luma
@@ -308,10 +322,19 @@ class CamService : Service(), LifecycleOwner {
         cameraProvider = null
     }
 
-    // runs on analysisExecutor — JPEG compression stays off the main thread
-    private fun sendSnapshot(bmp: Bitmap) {
+    // runs on analysisExecutor — JPEG compression stays off the main thread.
+    // analysisRotation is CameraX's upright rotation assuming the device sits
+    // at its display rotation, which is frozen for a service — subtract the
+    // real physical angle or snaps flip when the phone is rotated
+    private fun sendSnapshot(bmp: Bitmap, analysisRotation: Int = 0) {
+        val rot = if (analysisRotation == 0) 0
+            else ((analysisRotation - devicePhysicalDeg) % 360 + 360) % 360
+        val upright = if (rot == 0) bmp else Bitmap.createBitmap(
+            bmp, 0, 0, bmp.width, bmp.height,
+            android.graphics.Matrix().apply { postRotate(rot.toFloat()) }, true
+        )
         val out = ByteArrayOutputStream()
-        bmp.compress(Bitmap.CompressFormat.JPEG, 80, out)
+        upright.compress(Bitmap.CompressFormat.JPEG, 80, out)
         wsClient.sendBinary(out.toByteArray())
     }
 
