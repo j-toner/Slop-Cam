@@ -36,7 +36,6 @@ type Hub struct {
 	clip        *ClipRecorder // nil in tests
 	stateFile   string        // "" = don't persist security state
 	security    securityState
-	manualRec   bool
 }
 
 type Message struct {
@@ -109,8 +108,7 @@ func (h *Hub) run() {
 			if msg.msgType == websocket.MessageText {
 				cmd := string(msg.data)
 				if strings.HasPrefix(cmd, "CMD:SECURITY_") ||
-					strings.HasPrefix(cmd, "CMD:MOTION_REC_") ||
-					strings.HasPrefix(cmd, "CMD:RECORD_") {
+					strings.HasPrefix(cmd, "CMD:MOTION_REC_") {
 					h.handleServerCmd(cmd)
 					continue
 				}
@@ -164,21 +162,6 @@ func (h *Hub) handleServerCmd(cmd string) {
 			return
 		}
 		h.security.MotionRec = false
-	case cmd == "CMD:RECORD_START":
-		h.manualRec = true
-		if h.cam != nil {
-			h.cam.sendMsg(websocket.MessageText, startStreamCmd(h.lastRes))
-		}
-		if h.clip != nil {
-			h.clip.Start("manual", 0, func() { h.clipDone() })
-		}
-		return // transient, not persisted
-	case cmd == "CMD:RECORD_STOP":
-		h.manualRec = false
-		if h.clip != nil {
-			h.clip.Stop()
-		}
-		return
 	case cmd == "CMD:SECURITY_OFF":
 		if !h.security.On {
 			return
@@ -238,10 +221,10 @@ func (h *Hub) clipDone() {
 }
 
 // caller holds h.mu — stop the cam stream unless a viewer, security mode,
-// or an active recording still needs it
+// or an active motion clip still needs it
 func (h *Hub) maybeStopStreamLocked() {
 	clipBusy := h.clip != nil && h.clip.Active()
-	if len(h.viewers) == 0 && !h.security.On && !h.manualRec && !clipBusy && h.cam != nil {
+	if len(h.viewers) == 0 && !h.security.On && !clipBusy && h.cam != nil {
 		h.cam.sendMsg(websocket.MessageText, []byte("CMD:STOP_STREAM"))
 	}
 }

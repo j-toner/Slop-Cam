@@ -28,7 +28,6 @@ class MainActivity : AppCompatActivity() {
     private var wsClient: WsClient? = null
     private var activeWsUrl: String? = null
     private var activeMediamtxBase: String? = null
-    private var manualRecording = false
     private lateinit var pttRecorder: PttRecorder
     private var peerConnectionFactory: PeerConnectionFactory? = null
     private var peerConnection: PeerConnection? = null
@@ -83,14 +82,20 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Snapshot requested", Toast.LENGTH_SHORT).show()
         }
 
-        findViewById<Button>(R.id.btnRecord).setOnClickListener { btn ->
-            manualRecording = !manualRecording
-            wsClient?.sendText(if (manualRecording) "CMD:RECORD_START" else "CMD:RECORD_STOP")
-            (btn as Button).apply {
-                text = if (manualRecording) "⏺ REC" else "⏺"
-                setTextColor(getColor(
-                    if (manualRecording) R.color.rec_red else R.color.text))
+        // toggles security mode (continuous recording); same pref the
+        // Settings switch uses, so the two stay in sync
+        findViewById<Button>(R.id.btnRecord).setOnClickListener {
+            val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+            val on = !prefs.getBoolean("security_mode", false)
+            prefs.edit().putBoolean("security_mode", on).apply()
+            if (on) {
+                val fps = prefs.getString("record_fps", "1")
+                val res = prefs.getString("record_resolution", "480p")
+                wsClient?.sendText("CMD:SECURITY_ON:$fps:$res")
+            } else {
+                wsClient?.sendText("CMD:SECURITY_OFF")
             }
+            updateRecIndicator()
         }
 
         findViewById<Button>(R.id.btnLens).setOnClickListener {
@@ -128,8 +133,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateRecIndicator() {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        findViewById<View>(R.id.recChip).visibility =
-            if (prefs.getBoolean("security_mode", false)) View.VISIBLE else View.GONE
+        val on = prefs.getBoolean("security_mode", false)
+        findViewById<View>(R.id.recChip).visibility = if (on) View.VISIBLE else View.GONE
+        findViewById<Button>(R.id.btnRecord)
+            .setTextColor(getColor(if (on) R.color.rec_red else R.color.text))
     }
 
     /**
