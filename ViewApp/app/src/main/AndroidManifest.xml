@@ -6,6 +6,7 @@
     <!-- libwebrtc NetworkMonitor requires this; without it the network
          thread hits a SecurityException -> RTC_CHECK -> native SIGABRT -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="false"

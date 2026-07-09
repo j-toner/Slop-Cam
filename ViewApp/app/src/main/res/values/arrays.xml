@@ -5,4 +5,22 @@
         <item>720p</item>
         <item>1080p</item>
     </string-array>
+    <!-- values must stay in the ctrl-server whitelist (recorder.go) -->
+    <string-array name="record_fps_entries">
+        <item>0.5 fps (1 frame / 2 s)</item>
+        <item>1 fps</item>
+        <item>2 fps</item>
+        <item>5 fps</item>
+    </string-array>
+    <string-array name="record_fps_values">
+        <item>0.5</item>
+        <item>1</item>
+        <item>2</item>
+        <item>5</item>
+    </string-array>
+    <string-array name="record_resolutions">
+        <item>360p</item>
+        <item>480p</item>
+        <item>720p</item>
+    </string-array>
 </resources>

@@ -1,17 +1,60 @@
 <?xml version="1.0" encoding="utf-8"?>
 <PreferenceScreen xmlns:app="http://schemas.android.com/apk/res-auto">
-    <EditTextPreference
-        app:key="ctrl_server_url"
-        app:title="ctrl-server URL"
-        app:defaultValue="ws://100.x.x.x:8080/ws" />
-    <EditTextPreference
-        app:key="mediamtx_base_url"
-        app:title="mediamtx Base URL"
-        app:defaultValue="http://100.x.x.x:8889" />
-    <ListPreference
-        app:key="stream_resolution"
-        app:title="Stream Resolution"
-        app:entries="@array/resolutions"
-        app:entryValues="@array/resolutions"
-        app:defaultValue="720p" />
+
+    <PreferenceCategory app:title="Connection">
+        <EditTextPreference
+            app:key="ctrl_server_url"
+            app:title="ctrl-server URL"
+            app:defaultValue="ws://100.x.x.x:8080/ws"
+            app:useSimpleSummaryProvider="true" />
+        <EditTextPreference
+            app:key="mediamtx_base_url"
+            app:title="mediamtx Base URL"
+            app:defaultValue="http://100.x.x.x:8889"
+            app:useSimpleSummaryProvider="true" />
+        <ListPreference
+            app:key="stream_resolution"
+            app:title="Stream Resolution"
+            app:entries="@array/resolutions"
+            app:entryValues="@array/resolutions"
+            app:defaultValue="720p"
+            app:useSimpleSummaryProvider="true" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="Motion">
+        <SwitchPreferenceCompat
+            app:key="motion_snaps"
+            app:title="Motion snapshots"
+            app:summary="Camera takes a snapshot when it sees motion (while not streaming)"
+            app:defaultValue="false" />
+        <SwitchPreferenceCompat
+            app:key="motion_notify"
+            app:title="Motion notifications"
+            app:summary="Notify this phone when motion is detected"
+            app:defaultValue="false" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="Security recording">
+        <SwitchPreferenceCompat
+            app:key="security_mode"
+            app:title="Continuous recording"
+            app:summary="Camera streams 24/7; server records low-fps H.265 files"
+            app:defaultValue="false" />
+        <ListPreference
+            app:key="record_fps"
+            app:title="Recording frame rate"
+            app:entries="@array/record_fps_entries"
+            app:entryValues="@array/record_fps_values"
+            app:defaultValue="1"
+            app:dependency="security_mode"
+            app:useSimpleSummaryProvider="true" />
+        <ListPreference
+            app:key="record_resolution"
+            app:title="Recording resolution"
+            app:entries="@array/record_resolutions"
+            app:entryValues="@array/record_resolutions"
+            app:defaultValue="480p"
+            app:dependency="security_mode"
+            app:useSimpleSummaryProvider="true" />
+    </PreferenceCategory>
 </PreferenceScreen>

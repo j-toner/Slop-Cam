@@ -45,9 +45,35 @@ func main() {
 		log.Fatalf("mkdir snapshots: %v", err)
 	}
 
+	recordDir := os.Getenv("RECORD_DIR")
+	if recordDir == "" {
+		recordDir = "./recordings"
+	}
+	if err := os.MkdirAll(recordDir, 0755); err != nil {
+		log.Fatalf("mkdir recordings: %v", err)
+	}
+	rtspURL := os.Getenv("RTSP_URL")
+	if rtspURL == "" {
+		rtspURL = "rtsp://127.0.0.1:8554/cam"
+	}
+	recordCrf := os.Getenv("RECORD_CRF")
+	if recordCrf == "" {
+		recordCrf = "28"
+	}
+	recordRetentionDays := 14
+	if v := os.Getenv("RECORD_RETENTION_DAYS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			recordRetentionDays = n
+		}
+	}
+
 	hub := newHub(snapshotDir)
+	hub.recorder = newRecorder(rtspURL, recordDir, recordCrf)
+	hub.stateFile = filepath.Join(recordDir, ".security.json")
+	hub.loadSecurityState()
 	go hub.run()
 	go pruneLoop(snapshotDir, retentionDays)
+	go pruneRecordingsLoop(recordDir, recordRetentionDays)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", wsHandler(hub))
@@ -68,6 +94,15 @@ func pruneLoop(dir string, retentionDays int) {
 	for {
 		if err := pruneSnapshots(dir, retentionDays, time.Now()); err != nil {
 			log.Printf("prune snapshots: %v", err)
+		}
+		time.Sleep(6 * time.Hour)
+	}
+}
+
+func pruneRecordingsLoop(dir string, retentionDays int) {
+	for {
+		if err := pruneRecordings(dir, retentionDays, time.Now()); err != nil {
+			log.Printf("prune recordings: %v", err)
 		}
 		time.Sleep(6 * time.Hour)
 	}

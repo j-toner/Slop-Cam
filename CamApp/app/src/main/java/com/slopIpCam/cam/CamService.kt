@@ -136,7 +136,16 @@ class CamService : Service(), LifecycleOwner {
             msg == "CMD:SNAPSHOT" -> takeSnapshot()
             msg == "CMD:FLASHLIGHT_ON" -> setTorch(true)
             msg == "CMD:FLASHLIGHT_OFF" -> setTorch(false)
+            // remote motion-watch toggle from the viewer; the poll loop
+            // applies the pref within 2s, same as the local switch
+            msg == "CMD:MOTION_ON" -> setMotionWatchPref(true)
+            msg == "CMD:MOTION_OFF" -> setMotionWatchPref(false)
         }
+    }
+
+    private fun setMotionWatchPref(on: Boolean) {
+        getSharedPreferences("runtime", MODE_PRIVATE)
+            .edit().putBoolean("motion_watch", on).apply()
     }
 
     private fun setTorch(on: Boolean) {
@@ -211,6 +220,8 @@ class CamService : Service(), LifecycleOwner {
                         val now = System.currentTimeMillis()
                         if (now - lastSnapshotMs >= intervalMs) {
                             lastSnapshotMs = now
+                            // lets viewers notify on motion, not on manual snaps
+                            wsClient.sendText("EVENT:MOTION")
                             sendSnapshot(proxy.toBitmap())
                         }
                     }

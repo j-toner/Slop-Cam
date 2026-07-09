@@ -1,8 +1,13 @@
 package com.slopIpCam.view
 
 import android.Manifest
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
@@ -87,6 +92,47 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         reconnectIfConfigChanged()
+        // if already connected, push toggle changes now; a fresh connection
+        // syncs from its onConnected callback instead
+        syncCamConfig()
+        requestNotifPermissionIfNeeded()
+    }
+
+    /**
+     * Push motion/security prefs to the cam and server. Only prefs the user
+     * has actually touched are sent, so an untouched (or freshly installed)
+     * viewer never stomps state set elsewhere. Commands are idempotent.
+     */
+    private fun syncCamConfig() {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        if (prefs.contains("motion_snaps")) {
+            wsClient?.sendText(
+                if (prefs.getBoolean("motion_snaps", false)) "CMD:MOTION_ON"
+                else "CMD:MOTION_OFF"
+            )
+        }
+        if (prefs.contains("security_mode")) {
+            if (prefs.getBoolean("security_mode", false)) {
+                val fps = prefs.getString("record_fps", "1")
+                val res = prefs.getString("record_resolution", "480p")
+                wsClient?.sendText("CMD:SECURITY_ON:$fps:$res")
+            } else {
+                wsClient?.sendText("CMD:SECURITY_OFF")
+            }
+        }
+    }
+
+    private fun requestNotifPermissionIfNeeded() {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        if (!prefs.getBoolean("motion_notify", false)) return
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(
+                this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 3
+            )
+        }
     }
 
     private fun reconnectIfConfigChanged() {
@@ -114,6 +160,7 @@ class MainActivity : AppCompatActivity() {
                 onConnected = {
                     setStatus("Connected")
                     restartWebRtcIfNeeded(mediamtxBase)
+                    syncCamConfig()
                 },
                 onDisconnected = { setStatus("Reconnecting...") }
             )
@@ -252,11 +299,38 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handleServerMsg(msg: String) {
-        if (msg.startsWith("SNAPSHOT:")) {
-            runOnUiThread {
-                Toast.makeText(this, "New motion snapshot", Toast.LENGTH_SHORT).show()
+        when {
+            msg == "EVENT:MOTION" -> {
+                val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+                if (prefs.getBoolean("motion_notify", false)) notifyMotion()
+            }
+            msg.startsWith("SNAPSHOT:") -> runOnUiThread {
+                Toast.makeText(this, "New snapshot", Toast.LENGTH_SHORT).show()
             }
         }
+    }
+
+    private fun notifyMotion() {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED
+        ) return
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.createNotificationChannel(
+            NotificationChannel("motion", "Motion alerts", NotificationManager.IMPORTANCE_HIGH)
+        )
+        val pi = PendingIntent.getActivity(
+            this, 0, Intent(this, SnapshotsActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE
+        )
+        val notif = androidx.core.app.NotificationCompat.Builder(this, "motion")
+            .setSmallIcon(android.R.drawable.ic_menu_camera)
+            .setContentTitle("Motion detected")
+            .setContentText("SlopCam saw movement — snapshot saved")
+            .setContentIntent(pi)
+            .setAutoCancel(true)
+            .build()
+        nm.notify(2, notif)
     }
 
     override fun onDestroy() {

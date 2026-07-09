@@ -6,7 +6,8 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o ctrl-server .
 
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates
+# ffmpeg drives security-mode recording (libx265 included in alpine build)
+RUN apk add --no-cache ca-certificates ffmpeg
 WORKDIR /app
 COPY --from=builder /app/ctrl-server .
 EXPOSE 8080

@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,6 +14,12 @@ import (
 )
 
 const defaultResolution = "720p"
+
+type securityState struct {
+	On  bool   `json:"on"`
+	Fps string `json:"fps"`
+	Res string `json:"res"`
+}
 
 type Hub struct {
 	mu          sync.RWMutex
@@ -23,6 +31,9 @@ type Hub struct {
 	fromCam     chan Message
 	fromViewer  chan Message
 	snapshotDir string
+	recorder    *Recorder // nil when recording is unavailable (tests)
+	stateFile   string    // "" = don't persist security state
+	security    securityState
 }
 
 type Message struct {
@@ -58,9 +69,9 @@ func (h *Hub) run() {
 				}
 				h.cam = c
 				log.Println("cam registered")
-				if len(h.viewers) > 0 {
+				if len(h.viewers) > 0 || h.security.On {
 					c.sendMsg(websocket.MessageText, startStreamCmd(h.lastRes))
-					log.Println("viewers waiting, sent START_STREAM to cam")
+					log.Println("sent START_STREAM to cam")
 				}
 			} else {
 				h.viewers[c] = true
@@ -86,7 +97,8 @@ func (h *Hub) run() {
 					delete(h.viewers, c)
 					close(c.send)
 					log.Println("viewer unregistered")
-					if len(h.viewers) == 0 && h.cam != nil {
+					// security mode keeps the cam publishing for the recorder
+					if len(h.viewers) == 0 && h.cam != nil && !h.security.On {
 						h.cam.sendMsg(websocket.MessageText, []byte("CMD:STOP_STREAM"))
 					}
 				}
@@ -94,6 +106,11 @@ func (h *Hub) run() {
 			h.mu.Unlock()
 
 		case msg := <-h.fromViewer:
+			if msg.msgType == websocket.MessageText &&
+				strings.HasPrefix(string(msg.data), "CMD:SECURITY_") {
+				h.handleSecurityCmd(string(msg.data))
+				continue
+			}
 			h.mu.RLock()
 			cam := h.cam
 			h.mu.RUnlock()
@@ -121,6 +138,79 @@ func (h *Hub) run() {
 			}
 		}
 	}
+}
+
+// handleSecurityCmd owns security-camera mode: "CMD:SECURITY_ON:<fps>:<res>"
+// starts continuous low-fps recording (and keeps the cam streaming without
+// viewers), "CMD:SECURITY_OFF" stops it.
+func (h *Hub) handleSecurityCmd(cmd string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	switch {
+	case cmd == "CMD:SECURITY_OFF":
+		if !h.security.On {
+			return
+		}
+		h.security = securityState{}
+		if h.recorder != nil {
+			h.recorder.Stop()
+		}
+		if len(h.viewers) == 0 && h.cam != nil {
+			h.cam.sendMsg(websocket.MessageText, []byte("CMD:STOP_STREAM"))
+		}
+	case strings.HasPrefix(cmd, "CMD:SECURITY_ON:"):
+		parts := strings.Split(strings.TrimPrefix(cmd, "CMD:SECURITY_ON:"), ":")
+		if len(parts) != 2 || !allowedFps[parts[0]] || allowedRes[parts[1]] == "" {
+			log.Printf("invalid security cmd: %q", cmd)
+			return
+		}
+		next := securityState{On: true, Fps: parts[0], Res: parts[1]}
+		if h.security == next {
+			return
+		}
+		h.security = next
+		if h.recorder != nil {
+			h.recorder.Start(next.Fps, next.Res)
+		}
+		if h.cam != nil {
+			h.cam.sendMsg(websocket.MessageText, startStreamCmd(h.lastRes))
+		}
+	default:
+		log.Printf("unknown security cmd: %q", cmd)
+		return
+	}
+	h.saveSecurityState()
+}
+
+// caller holds h.mu
+func (h *Hub) saveSecurityState() {
+	if h.stateFile == "" {
+		return
+	}
+	data, _ := json.Marshal(h.security)
+	if err := os.WriteFile(h.stateFile, data, 0644); err != nil {
+		log.Printf("save security state: %v", err)
+	}
+}
+
+// loadSecurityState restores security mode across restarts; call before run().
+func (h *Hub) loadSecurityState() {
+	if h.stateFile == "" {
+		return
+	}
+	data, err := os.ReadFile(h.stateFile)
+	if err != nil {
+		return // first run
+	}
+	var s securityState
+	if json.Unmarshal(data, &s) != nil || !s.On {
+		return
+	}
+	h.security = s
+	if h.recorder != nil {
+		h.recorder.Start(s.Fps, s.Res)
+	}
+	log.Printf("security mode restored (fps=%s res=%s)", s.Fps, s.Res)
 }
 
 func (h *Hub) broadcastViewers(msgType websocket.MessageType, data []byte) {

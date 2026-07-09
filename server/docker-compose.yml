@@ -14,5 +14,9 @@ services:
     environment:
       - LISTEN_ADDR=${TAILSCALE_IP}:8080
       - SNAPSHOT_DIR=/data/snapshots
+      - RECORD_DIR=/recordings
+      # mediamtx binds the Tailscale IP (see mediamtx.yml), not loopback
+      - RTSP_URL=rtsp://${TAILSCALE_IP}:8554/cam
     volumes:
       - /data/snapshots:/data/snapshots
+      - ./recordings:/recordings
