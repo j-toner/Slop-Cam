@@ -19,13 +19,34 @@
             android:paddingBottom="12dp">
 
             <TextView
-                android:layout_width="0dp"
+                android:id="@+id/tabSnaps"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="Snapshots"
-                android:textColor="@color/text"
-                android:textSize="20sp"
+                android:background="@drawable/bg_pill"
+                android:paddingHorizontal="18dp"
+                android:paddingVertical="8dp"
+                android:text="Snaps"
+                android:textColor="@color/neon"
+                android:textSize="14sp"
                 android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tabClips"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_pill"
+                android:paddingHorizontal="18dp"
+                android:paddingVertical="8dp"
+                android:text="Clips"
+                android:textColor="@color/text_dim"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <Space
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
 
             <TextView
                 android:id="@+id/tvCount"
@@ -72,6 +93,13 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:scaleType="fitCenter" />
+
+        <VideoView
+            android:id="@+id/viewerVideo"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:layout_gravity="center"
+            android:visibility="gone" />
 
         <TextView
             android:id="@+id/btnCloseViewer"

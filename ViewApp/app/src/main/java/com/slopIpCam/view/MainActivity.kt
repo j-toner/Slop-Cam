@@ -208,7 +208,9 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private suspend fun startWebRtc(mediamtxBase: String) = coroutineScope {
+    // explicit Unit: the WHEP-failure observer inside recursively schedules
+    // startWebRtc, which breaks return-type inference otherwise
+    private suspend fun startWebRtc(mediamtxBase: String): Unit = coroutineScope {
         val whepUrl = "$mediamtxBase/cam/whep"
         val factory = peerConnectionFactory ?: return@coroutineScope
 
@@ -234,7 +236,19 @@ class MainActivity : AppCompatActivity() {
                 override fun onRenegotiationNeeded() {}
                 override fun onConnectionChange(s: PeerConnection.PeerConnectionState) {
                     if (s == PeerConnection.PeerConnectionState.CONNECTED) setStatus("Streaming")
-                    else if (s == PeerConnection.PeerConnectionState.FAILED) setStatus("Stream failed")
+                    else if (s == PeerConnection.PeerConnectionState.FAILED) {
+                        // cam restarted its stream (e.g. it was rotated) —
+                        // tear down and redo the WHEP dance, which retries
+                        // until the cam publishes again
+                        setStatus("Stream lost, reconnecting...")
+                        val base = activeMediamtxBase ?: return
+                        scope.launch {
+                            webRtcJob?.cancelAndJoin()
+                            peerConnection?.dispose()
+                            peerConnection = null
+                            webRtcJob = launch(Dispatchers.IO) { startWebRtc(base) }
+                        }
+                    }
                 }
             }
         ) ?: return@coroutineScope

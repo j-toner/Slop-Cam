@@ -16,14 +16,22 @@ class RtspStreamer(
 
     val isStreaming: Boolean get() = stream.isStreaming
 
-    fun start(rtspUrl: String, width: Int = 1280, height: Int = 720, bitrateBps: Int = 2_000_000) {
+    fun start(
+        rtspUrl: String,
+        width: Int = 1280,
+        height: Int = 720,
+        bitrateBps: Int = 2_000_000,
+        rotation: Int = -1
+    ) {
         if (stream.isStreaming) return
         stream.prepareAudio(44100, true, 128_000)
         // match the encoded frame to the phone's orientation at stream start —
         // rotation 90/270 swaps encoder dims to portrait, otherwise the GL
-        // pipeline squeezes the rotated image into a landscape frame
-        val rotation = CameraHelper.getCameraOrientation(context)
-        if (!stream.prepareVideo(width, height, bitrateBps, rotation = rotation)) {
+        // pipeline squeezes the rotated image into a landscape frame.
+        // callers pass a sensor-derived rotation because the display rotation
+        // is frozen while the screen is off/locked
+        val rot = if (rotation >= 0) rotation else CameraHelper.getCameraOrientation(context)
+        if (!stream.prepareVideo(width, height, bitrateBps, rotation = rot)) {
             onError("prepareVideo failed")
             return
         }

@@ -1,10 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"sync"
 	"syscall"
 	"time"
@@ -116,11 +119,33 @@ func (r *Recorder) buildCmd(fps, height string) *exec.Cmd {
 		"-an",
 		"-f", "segment", "-segment_time", "3600",
 		"-reset_timestamps", "1", "-strftime", "1",
+		// fragmented mp4: the current segment is playable while being
+		// written, and a crash/power-cut doesn't lose the whole hour
+		"-segment_format_options", "movflags=+frag_keyframe+empty_moov+default_base_moof",
 		out,
 	)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	return cmd
+}
+
+// listRecordings returns segment URLs as JSON, newest first.
+func listRecordings(dir string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		files := []string{} // marshal as [] instead of null when empty
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			if !e.IsDir() && filepath.Ext(e.Name()) == ".mp4" {
+				files = append(files, e.Name())
+			}
+		}
+		sort.Sort(sort.Reverse(sort.StringSlice(files))) // names are timestamps
+		for i, f := range files {
+			files[i] = "/recordings/" + f
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(files)
+	}
 }
 
 // pruneRecordings deletes .mp4 segments older than retentionDays by mtime.

@@ -80,6 +80,10 @@ func main() {
 	mux.Handle("/snapshots/", http.StripPrefix("/snapshots/",
 		http.FileServer(http.Dir(filepath.Clean(snapshotDir)))))
 	mux.HandleFunc("/snapshots", listSnapshots(snapshotDir))
+	// FileServer supports Range requests, so video seeking works
+	mux.Handle("/recordings/", http.StripPrefix("/recordings/",
+		http.FileServer(http.Dir(filepath.Clean(recordDir)))))
+	mux.HandleFunc("/recordings", listRecordings(recordDir))
 
 	srv := &http.Server{
 		Addr:              addr,

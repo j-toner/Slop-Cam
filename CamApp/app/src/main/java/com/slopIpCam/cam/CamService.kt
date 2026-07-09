@@ -6,6 +6,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.os.Handler
 import android.os.IBinder
+import android.util.Log
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.NotificationCompat
@@ -34,6 +35,16 @@ class CamService : Service(), LifecycleOwner {
     private var cameraProvider: ProcessCameraProvider? = null
     private var lastSnapshotMs = 0L
     @Volatile private var oneShotSnapshot = false
+
+    // rotation follow: sensor-derived encoder rotation (-1 = no reading yet),
+    // the rotation the live stream was started with, and the params needed
+    // to restart it when the phone is turned
+    private var deviceRotation = -1
+    private var appliedRotation = -1
+    private var activeRtspUrl: String? = null
+    private var activeWidth = 1280
+    private var activeHeight = 720
+    private var orientationListener: android.view.OrientationEventListener? = null
 
     companion object {
         const val CHANNEL_ID = "slopIpCam"
@@ -87,7 +98,37 @@ class CamService : Service(), LifecycleOwner {
         )
         wsClient.connect()
         startMotionWatchPolling()
+        startOrientationWatch()
         updateNotification("Connecting...")
+    }
+
+    private fun startOrientationWatch() {
+        orientationListener = object : android.view.OrientationEventListener(this) {
+            override fun onOrientationChanged(deg: Int) {
+                if (deg == ORIENTATION_UNKNOWN) return
+                val quantized = ((deg + 45) / 90 % 4) * 90
+                // sensor degrees are clockwise from natural portrait; the
+                // encoder wants 90 for portrait, 0/180 for landscape
+                val rotation = (quantized + 90) % 360
+                if (rotation == deviceRotation) return
+                deviceRotation = rotation
+                // debounce: wait for the phone to settle before restarting
+                handler.removeCallbacks(rotationRestart)
+                handler.postDelayed(rotationRestart, 2000)
+            }
+        }.also { it.enable() }
+    }
+
+    // restart the live stream so the encoded frame matches the new
+    // orientation — encoder dimensions cannot change mid-stream
+    private val rotationRestart = Runnable {
+        val streamer = rtspStreamer ?: return@Runnable
+        val url = activeRtspUrl ?: return@Runnable
+        if (!streamer.isStreaming || deviceRotation == appliedRotation) return@Runnable
+        Log.i("CamService", "rotation changed to $deviceRotation, restarting stream")
+        streamer.stop()
+        appliedRotation = deviceRotation
+        streamer.start(url, activeWidth, activeHeight, rotation = deviceRotation)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -122,7 +163,11 @@ class CamService : Service(), LifecycleOwner {
                 // RTSP stream and MotionWatch cannot share the camera
                 handler.post {
                     stopMotionWatch()
-                    rtspStreamer?.start(rtspUrl, w, h)
+                    activeRtspUrl = rtspUrl
+                    activeWidth = w
+                    activeHeight = h
+                    appliedRotation = deviceRotation
+                    rtspStreamer?.start(rtspUrl, w, h, rotation = deviceRotation)
                     updateNotification("Streaming")
                 }
             }
@@ -280,6 +325,8 @@ class CamService : Service(), LifecycleOwner {
             .edit().putString(KEY_STATUS, "Off").apply()
         pollRunnable?.let { handler.removeCallbacks(it) }
         pollRunnable = null
+        orientationListener?.disable()
+        handler.removeCallbacks(rotationRestart)
         stopMotionWatch()
         lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         wsClient.disconnect()
