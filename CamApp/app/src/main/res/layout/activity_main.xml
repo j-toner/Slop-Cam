@@ -1,28 +1,49 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent" android:layout_height="match_parent">
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:background="@color/bg">
 
     <LinearLayout
         android:layout_width="match_parent" android:layout_height="match_parent"
-        android:orientation="vertical" android:padding="16dp">
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="24dp">
 
-        <TextView android:id="@+id/tvStatus" android:layout_width="wrap_content"
-            android:layout_height="wrap_content" android:text="Status: Off" />
+        <TextView
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="SlopCam"
+            android:textColor="@color/text"
+            android:textSize="22sp"
+            android:textStyle="bold" />
 
-        <Switch android:id="@+id/switchService" android:layout_width="wrap_content"
-            android:layout_height="wrap_content" android:text="Enable Camera Service" />
+        <TextView android:id="@+id/tvStatus"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/bg_chip"
+            android:paddingHorizontal="14dp" android:paddingVertical="7dp"
+            android:text="Status: Off"
+            android:textColor="@color/neon"
+            android:textSize="13sp" />
 
-        <Switch android:id="@+id/switchMotion" android:layout_width="wrap_content"
-            android:layout_height="wrap_content" android:text="Motion Watch" />
+        <Button android:id="@+id/btnSettings"
+            style="@style/ControlButton"
+            android:layout_width="220dp" android:layout_height="wrap_content"
+            android:layout_marginTop="40dp"
+            android:text="Settings" />
 
-        <Button android:id="@+id/btnSnap" android:layout_width="wrap_content"
-            android:layout_height="wrap_content" android:text="Take Snapshot" />
+        <Button android:id="@+id/btnDim"
+            style="@style/ControlButton"
+            android:layout_width="220dp" android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="Screen Off (power save)" />
 
-        <Button android:id="@+id/btnSettings" android:layout_width="wrap_content"
-            android:layout_height="wrap_content" android:text="Settings" />
-
-        <Button android:id="@+id/btnDim" android:layout_width="wrap_content"
-            android:layout_height="wrap_content" android:text="Screen Off (power save)" />
+        <TextView
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:gravity="center"
+            android:text="Camera service runs automatically.\nEverything else is controlled from the viewer."
+            android:textColor="@color/text_dim"
+            android:textSize="12sp" />
     </LinearLayout>
 
     <!-- power-save mode: black overlay + zero brightness, tap to wake -->

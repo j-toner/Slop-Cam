@@ -7,7 +7,6 @@ import android.os.Bundle
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
-import android.widget.Switch
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -15,10 +14,13 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 
+/**
+ * Deliberately minimal: the camera service starts itself whenever this
+ * screen opens (streaming, motion watch, and recording are all driven
+ * remotely from the viewer app), leaving just Settings and power save.
+ */
 class MainActivity : AppCompatActivity() {
     private lateinit var statusText: TextView
-    private lateinit var serviceSwitch: Switch
-    private lateinit var motionSwitch: Switch
 
     // strong reference required: SharedPreferences holds listeners weakly
     private val statusListener =
@@ -33,68 +35,14 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         statusText = findViewById(R.id.tvStatus)
-        serviceSwitch = findViewById(R.id.switchService)
-        motionSwitch = findViewById(R.id.switchMotion)
-
-        // reflect a service that is already running before attaching the
-        // listener, so the programmatic setChecked doesn't restart it;
-        // CamService.running (not the status pref) is the live truth —
-        // the pref goes stale if the process died mid-"Reconnecting..."
-        serviceSwitch.isChecked = CamService.running
-        motionSwitch.isChecked = runtimePrefs().getBoolean("motion_watch", false)
-
-        serviceSwitch.setOnCheckedChangeListener { _, on ->
-            if (on) startServiceWithPermissions() else CamService.stop(this)
-        }
-
-        motionSwitch.setOnCheckedChangeListener { _, on ->
-            getSharedPreferences("runtime", MODE_PRIVATE)
-                .edit().putBoolean("motion_watch", on).apply()
-        }
-
-        findViewById<Button>(R.id.btnSnap).setOnClickListener {
-            if (CamService.running) CamService.snapshot(this)
-            else android.widget.Toast.makeText(
-                this, "Start the camera service first", android.widget.Toast.LENGTH_SHORT).show()
-        }
 
         findViewById<Button>(R.id.btnSettings).setOnClickListener {
             startActivity(android.content.Intent(this, SettingsActivity::class.java))
         }
-
         findViewById<Button>(R.id.btnDim).setOnClickListener { enterDimMode() }
         findViewById<View>(R.id.dimOverlay).setOnClickListener { exitDimMode() }
 
-        if (intent.getBooleanExtra(EXTRA_AUTO_START, false)) {
-            serviceSwitch.isChecked = true // no-op if already checked
-            startServiceWithPermissions()  // so start explicitly, idempotent
-        }
-    }
-
-    /**
-     * Power save: black overlay + zero backlight, pixels effectively off on
-     * OLED. Keeps the screen technically awake so Android never dozes the
-     * camera service. Tap anywhere to wake.
-     */
-    private fun enterDimMode() {
-        findViewById<View>(R.id.dimOverlay).visibility = View.VISIBLE
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        window.attributes = window.attributes.apply { screenBrightness = 0f }
-        WindowInsetsControllerCompat(window, window.decorView).apply {
-            hide(WindowInsetsCompat.Type.systemBars())
-            systemBarsBehavior =
-                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        }
-    }
-
-    private fun exitDimMode() {
-        findViewById<View>(R.id.dimOverlay).visibility = View.GONE
-        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        window.attributes = window.attributes.apply {
-            screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
-        }
-        WindowInsetsControllerCompat(window, window.decorView)
-            .show(WindowInsetsCompat.Type.systemBars())
+        startServiceWithPermissions()
     }
 
     private fun runtimePrefs() = getSharedPreferences("runtime", MODE_PRIVATE)
@@ -138,16 +86,41 @@ class MainActivity : AppCompatActivity() {
         val cameraAndMicGranted = requiredPermissions()
             .filter { it != Manifest.permission.POST_NOTIFICATIONS }
             .all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }
-        if (cameraAndMicGranted && serviceSwitch.isChecked) {
+        if (cameraAndMicGranted) {
             CamService.start(this)
-        } else if (!cameraAndMicGranted) {
-            serviceSwitch.isChecked = false
+        } else {
             statusText.text = "Camera/mic permission required"
         }
     }
 
+    /**
+     * Power save: black overlay + zero backlight, pixels effectively off on
+     * OLED. Keeps the screen technically awake so Android never dozes the
+     * camera service. Tap anywhere to wake.
+     */
+    private fun enterDimMode() {
+        findViewById<View>(R.id.dimOverlay).visibility = View.VISIBLE
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        window.attributes = window.attributes.apply { screenBrightness = 0f }
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+    }
+
+    private fun exitDimMode() {
+        findViewById<View>(R.id.dimOverlay).visibility = View.GONE
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        window.attributes = window.attributes.apply {
+            screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        }
+        WindowInsetsControllerCompat(window, window.decorView)
+            .show(WindowInsetsCompat.Type.systemBars())
+    }
+
     companion object {
-        const val EXTRA_AUTO_START = "auto_start"
+        const val EXTRA_AUTO_START = "auto_start" // kept for BootReceiver's intent
         private const val REQ_PERMS = 1
     }
 }

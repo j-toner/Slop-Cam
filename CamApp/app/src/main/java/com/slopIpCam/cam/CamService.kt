@@ -97,6 +97,10 @@ class CamService : Service(), LifecycleOwner {
         rtspStreamer = RtspStreamer(this) { err ->
             updateNotification("Stream error: $err")
             handler.postDelayed({ tryStartStream() }, 5000)
+        }.also { streamer ->
+            streamer.motionFrameCb = { luma, w, h, stride ->
+                if (motionWatchEnabled) onStreamMotionFrame(luma, w, h, stride)
+            }
         }
 
         wsClient = WsClient(
@@ -152,6 +156,7 @@ class CamService : Service(), LifecycleOwner {
         val url = activeRtspUrl ?: return
         if (!shouldStream || streamer.isStreaming) return
         appliedRotation = deviceRotation
+        streamPrevLuma = null // don't diff frames across stream sessions
         streamer.start(url, activeWidth, activeHeight, rotation = deviceRotation)
         if (streamer.isStreaming) updateNotification("Streaming")
     }
@@ -249,9 +254,9 @@ class CamService : Service(), LifecycleOwner {
                 if (on && !streaming && cameraProvider == null) startMotionWatch()
                 else if ((!on || streaming) && cameraProvider != null && !oneShotSnapshot)
                     stopMotionWatch() // keep camera bound while a one-shot is pending
-                // while streaming the stream owns the camera, so motion
-                // detection taps the stream's own frames instead
-                setStreamMotionWatch(on && streaming)
+                // while streaming, motion analysis rides the stream's own
+                // frames (see motionFrameCb); this flag gates it
+                motionWatchEnabled = on
                 handler.postDelayed(this, 2000)
             }
         }
@@ -259,22 +264,8 @@ class CamService : Service(), LifecycleOwner {
         handler.post(r)
     }
 
-    private var streamMotionAttached = false
+    @Volatile private var motionWatchEnabled = false
     private var streamPrevLuma: ByteArray? = null
-
-    private fun setStreamMotionWatch(on: Boolean) {
-        if (on == streamMotionAttached) return
-        val streamer = rtspStreamer ?: return
-        if (on) {
-            if (streamer.addMotionFrameListener { luma, w, h, stride ->
-                    onStreamMotionFrame(luma, w, h, stride)
-                }) streamMotionAttached = true
-        } else {
-            streamer.removeMotionFrameListener()
-            streamMotionAttached = false
-            streamPrevLuma = null
-        }
-    }
 
     // runs on the camera ImageReader thread
     private fun onStreamMotionFrame(luma: ByteArray, w: Int, h: Int, stride: Int) {
@@ -415,7 +406,6 @@ class CamService : Service(), LifecycleOwner {
         stopMotionWatch()
         lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         wsClient.disconnect()
-        rtspStreamer?.removeMotionFrameListener()
         rtspStreamer?.stop()
         pttPlayer.release()
         analysisExecutor.shutdown()

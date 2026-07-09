@@ -26,6 +26,10 @@ class RtspStreamer(
         rotation: Int = -1
     ) {
         if (stream.isStreaming) return
+        if (!motionListenerAttached && motionFrameCb != null) {
+            attachMotionListener() // once, before the camera session exists
+            motionListenerAttached = true
+        }
         stream.prepareAudio(44100, true, 128_000)
         // match the encoded frame to the phone's orientation at stream start —
         // rotation 90/270 swaps encoder dims to portrait, otherwise the GL
@@ -101,17 +105,29 @@ class RtspStreamer(
         }
     }
 
+    /** Set before the first start(); frames arrive on the ImageReader thread. */
+    var motionFrameCb: ((ByteArray, Int, Int, Int) -> Unit)? = null
+    private var lastMotionFrameMs = 0L
+
     /**
      * Tap the stream's camera frames for motion analysis (Y plane + dims).
-     * Runs on the ImageReader thread; the camera stays owned by the stream.
+     * Must be attached while the camera is NOT running — RootEncoder tears
+     * the whole camera session down and rebuilds it otherwise. Called from
+     * start() before prepareVideo, so it just joins the initial session.
      */
-    fun addMotionFrameListener(cb: (ByteArray, Int, Int, Int) -> Unit): Boolean {
-        val source = stream.videoSource as? Camera2Source ?: return false
-        return try {
-            source.addImageListener(320, 240, false,
+    private fun attachMotionListener() {
+        val cb = motionFrameCb ?: return
+        val source = stream.videoSource as? Camera2Source ?: return
+        try {
+            source.addImageListener(
+                android.graphics.ImageFormat.YUV_420_888, /* maxImages = */ 2, false,
                 object : com.pedro.encoder.input.video.Camera2ApiManager.ImageCallback {
                     override fun onImageAvailable(image: android.media.Image) {
                         try {
+                            // ~2 fps is plenty for motion; skip the copy otherwise
+                            val now = System.currentTimeMillis()
+                            if (now - lastMotionFrameMs < 500) return
+                            lastMotionFrameMs = now
                             val plane = image.planes[0]
                             val buf = plane.buffer
                             val luma = ByteArray(buf.remaining())
@@ -122,16 +138,12 @@ class RtspStreamer(
                         }
                     }
                 })
-            true
         } catch (e: Exception) {
             Log.e("RtspStreamer", "addImageListener failed: ${e.message}")
-            false
         }
     }
 
-    fun removeMotionFrameListener() {
-        runCatching { (stream.videoSource as? Camera2Source)?.removeImageListener() }
-    }
+    private var motionListenerAttached = false
 
     /** Torch control while the stream owns the camera device. */
     fun setTorch(on: Boolean): Boolean {
