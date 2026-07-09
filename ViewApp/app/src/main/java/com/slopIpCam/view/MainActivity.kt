@@ -123,7 +123,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setStatus(text: String) {
-        runOnUiThread { findViewById<TextView>(R.id.tvStatus).text = text }
+        runOnUiThread {
+            findViewById<TextView>(R.id.tvStatus).apply {
+                this.text = text
+                val active = text == "Streaming" || text == "Connected"
+                setTextColor(getColor(if (active) R.color.neon else R.color.text_dim))
+            }
+        }
     }
 
     /** Edge-to-edge video: hide status/nav bars, swipe from an edge peeks them back. */

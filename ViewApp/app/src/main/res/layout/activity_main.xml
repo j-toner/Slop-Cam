@@ -10,33 +10,44 @@
 
     <TextView android:id="@+id/tvStatus"
         android:layout_width="wrap_content" android:layout_height="wrap_content"
-        android:layout_gravity="top|start" android:layout_margin="12dp"
-        android:paddingHorizontal="8dp" android:paddingVertical="4dp"
-        android:background="#66000000"
-        android:text="Disconnected" android:textColor="#fff" />
+        android:layout_gravity="top|start" android:layout_margin="14dp"
+        android:paddingHorizontal="12dp" android:paddingVertical="6dp"
+        android:background="@drawable/bg_chip"
+        android:text="Disconnected" android:textColor="@color/text_dim"
+        android:textSize="12sp" />
 
     <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
-        android:layout_gravity="bottom|end" android:layout_margin="8dp"
-        android:orientation="horizontal" android:alpha="0.75">
+        android:layout_gravity="bottom|end" android:layout_margin="12dp"
+        android:orientation="horizontal">
 
         <ToggleButton android:id="@+id/btnFlashlight"
+            style="@style/ControlButton"
             android:layout_width="wrap_content" android:layout_height="wrap_content"
-            android:textOn="Torch ON" android:textOff="Torch OFF" />
+            android:textColor="@color/toggle_text"
+            android:textOn="Torch" android:textOff="Torch" />
 
         <Button android:id="@+id/btnPtt"
+            style="@style/ControlButton"
             android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
             android:text="PTT" />
 
         <Button android:id="@+id/btnSnap"
+            style="@style/ControlButton"
             android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
             android:text="📷" />
 
         <Button android:id="@+id/btnSnapshots"
+            style="@style/ControlButton"
             android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
             android:text="Snaps" />
 
         <Button android:id="@+id/btnSettings"
+            style="@style/ControlButton"
             android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
             android:text="⚙" />
     </LinearLayout>
 </FrameLayout>
