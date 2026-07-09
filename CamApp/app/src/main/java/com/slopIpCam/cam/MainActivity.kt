@@ -4,12 +4,16 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.view.View
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.Switch
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 
 class MainActivity : AppCompatActivity() {
     private lateinit var statusText: TextView
@@ -58,10 +62,39 @@ class MainActivity : AppCompatActivity() {
             startActivity(android.content.Intent(this, SettingsActivity::class.java))
         }
 
+        findViewById<Button>(R.id.btnDim).setOnClickListener { enterDimMode() }
+        findViewById<View>(R.id.dimOverlay).setOnClickListener { exitDimMode() }
+
         if (intent.getBooleanExtra(EXTRA_AUTO_START, false)) {
             serviceSwitch.isChecked = true // no-op if already checked
             startServiceWithPermissions()  // so start explicitly, idempotent
         }
+    }
+
+    /**
+     * Power save: black overlay + zero backlight, pixels effectively off on
+     * OLED. Keeps the screen technically awake so Android never dozes the
+     * camera service. Tap anywhere to wake.
+     */
+    private fun enterDimMode() {
+        findViewById<View>(R.id.dimOverlay).visibility = View.VISIBLE
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        window.attributes = window.attributes.apply { screenBrightness = 0f }
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+    }
+
+    private fun exitDimMode() {
+        findViewById<View>(R.id.dimOverlay).visibility = View.GONE
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        window.attributes = window.attributes.apply {
+            screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        }
+        WindowInsetsControllerCompat(window, window.decorView)
+            .show(WindowInsetsCompat.Type.systemBars())
     }
 
     private fun runtimePrefs() = getSharedPreferences("runtime", MODE_PRIVATE)

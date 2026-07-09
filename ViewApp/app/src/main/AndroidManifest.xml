@@ -28,9 +28,12 @@
             android:name=".SettingsActivity"
             android:exported="false" />
 
+        <!-- handle rotation ourselves: recreating the activity would kill
+             an in-progress video playback and dump back to the grid -->
         <activity
             android:name=".SnapshotsActivity"
-            android:exported="false" />
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden" />
 
     </application>
 

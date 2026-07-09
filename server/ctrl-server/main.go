@@ -74,6 +74,7 @@ func main() {
 	go hub.run()
 	go pruneLoop(snapshotDir, retentionDays)
 	go pruneRecordingsLoop(recordDir, recordRetentionDays)
+	go remuxLoop(recordDir)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", wsHandler(hub))
@@ -100,6 +101,13 @@ func pruneLoop(dir string, retentionDays int) {
 			log.Printf("prune snapshots: %v", err)
 		}
 		time.Sleep(6 * time.Hour)
+	}
+}
+
+func remuxLoop(dir string) {
+	for {
+		remuxFinishedSegments(dir, time.Now())
+		time.Sleep(time.Minute)
 	}
 }
 

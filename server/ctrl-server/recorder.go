@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -146,6 +147,58 @@ func listRecordings(dir string) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(files)
 	}
+}
+
+// remuxFinishedSegments rewrites completed fragmented-mp4 segments as
+// regular faststart mp4s. Fragmented files are crash-safe and playable
+// while being written, but players can't seek them (no index); once a
+// segment is done being written we trade the fragmenting for seekability.
+func remuxFinishedSegments(dir string, now time.Time) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".mp4" {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || now.Sub(info.ModTime()) < 2*time.Minute {
+			continue // still being written (or just closed — next sweep)
+		}
+		path := filepath.Join(dir, e.Name())
+		if !isFragmentedMp4(path) {
+			continue // already remuxed
+		}
+		tmp := path + ".remuxtmp" // non-.mp4 suffix keeps it out of listings
+		cmd := exec.Command("ffmpeg", "-y", "-v", "error",
+			"-i", path, "-c", "copy", "-movflags", "+faststart", "-f", "mp4", tmp)
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			log.Printf("remux %s: %v", e.Name(), err)
+			os.Remove(tmp)
+			continue
+		}
+		if err := os.Rename(tmp, path); err != nil {
+			log.Printf("remux rename %s: %v", e.Name(), err)
+			os.Remove(tmp)
+			continue
+		}
+		log.Printf("remuxed %s for seeking", e.Name())
+	}
+}
+
+// isFragmentedMp4 sniffs for the mvex box that only fragmented files
+// carry in their (front-loaded) moov.
+func isFragmentedMp4(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	buf := make([]byte, 4096)
+	n, _ := f.Read(buf)
+	return n > 0 && strings.Contains(string(buf[:n]), "mvex")
 }
 
 // pruneRecordings deletes .mp4 segments older than retentionDays by mtime.
