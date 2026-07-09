@@ -45,6 +45,9 @@ class CamService : Service(), LifecycleOwner {
     private var activeWidth = 1280
     private var activeHeight = 720
     private var orientationListener: android.view.OrientationEventListener? = null
+    // last command wins: true after START_STREAM, false after STOP_STREAM —
+    // error/retry paths only restart the stream while this is set
+    @Volatile private var shouldStream = false
 
     companion object {
         const val CHANNEL_ID = "slopIpCam"
@@ -87,7 +90,10 @@ class CamService : Service(), LifecycleOwner {
         motionDetector = MotionDetector(
             sensitivity = prefs.getInt("motion_sensitivity", 30)
         )
-        rtspStreamer = RtspStreamer(this) { err -> updateNotification("Stream error: $err") }
+        rtspStreamer = RtspStreamer(this) { err ->
+            updateNotification("Stream error: $err")
+            handler.postDelayed({ tryStartStream() }, 5000)
+        }
 
         wsClient = WsClient(
             url = wsUrl,
@@ -120,15 +126,27 @@ class CamService : Service(), LifecycleOwner {
     }
 
     // restart the live stream so the encoded frame matches the new
-    // orientation — encoder dimensions cannot change mid-stream
+    // orientation — encoder dimensions cannot change mid-stream. The start
+    // half is delayed: RootEncoder needs a beat to release the encoders and
+    // camera after stop(), an immediate start() fails silently
     private val rotationRestart = Runnable {
         val streamer = rtspStreamer ?: return@Runnable
-        val url = activeRtspUrl ?: return@Runnable
         if (!streamer.isStreaming || deviceRotation == appliedRotation) return@Runnable
         Log.i("CamService", "rotation changed to $deviceRotation, restarting stream")
         streamer.stop()
+        handler.postDelayed({ tryStartStream() }, 500)
+    }
+
+    // idempotent stream start; failures come back through the streamer's
+    // onError, which reschedules this — so transient camera/network errors
+    // retry instead of leaving a dead "Streaming" state
+    private fun tryStartStream() {
+        val streamer = rtspStreamer ?: return
+        val url = activeRtspUrl ?: return
+        if (!shouldStream || streamer.isStreaming) return
         appliedRotation = deviceRotation
         streamer.start(url, activeWidth, activeHeight, rotation = deviceRotation)
+        if (streamer.isStreaming) updateNotification("Streaming")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -166,13 +184,13 @@ class CamService : Service(), LifecycleOwner {
                     activeRtspUrl = rtspUrl
                     activeWidth = w
                     activeHeight = h
-                    appliedRotation = deviceRotation
-                    rtspStreamer?.start(rtspUrl, w, h, rotation = deviceRotation)
-                    updateNotification("Streaming")
+                    shouldStream = true
+                    tryStartStream()
                 }
             }
             msg == "CMD:STOP_STREAM" -> {
                 handler.post {
+                    shouldStream = false
                     rtspStreamer?.stop()
                     updateNotification("Idle")
                     // poll loop re-enables motion watch if it's switched on
@@ -323,10 +341,12 @@ class CamService : Service(), LifecycleOwner {
         running = false
         getSharedPreferences("runtime", MODE_PRIVATE)
             .edit().putString(KEY_STATUS, "Off").apply()
-        pollRunnable?.let { handler.removeCallbacks(it) }
+        shouldStream = false
         pollRunnable = null
         orientationListener?.disable()
-        handler.removeCallbacks(rotationRestart)
+        // clears the poll loop, rotation restart, and any pending stream
+        // retries — none may fire after the service is gone
+        handler.removeCallbacksAndMessages(null)
         stopMotionWatch()
         lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         wsClient.disconnect()

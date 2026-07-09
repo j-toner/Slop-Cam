@@ -65,7 +65,12 @@ class RtspStreamer(
     override fun onConnectionSuccess() { Log.i("RtspStreamer", "RTSP connected") }
     override fun onConnectionFailed(reason: String) { onError(reason); stop() }
     override fun onNewBitrate(bitrate: Long) {}
-    override fun onDisconnect() { Log.i("RtspStreamer", "RTSP disconnected") }
+    override fun onDisconnect() {
+        Log.i("RtspStreamer", "RTSP disconnected")
+        // server-side teardown (e.g. mediamtx restart) must reset isStreaming,
+        // otherwise a later start() no-ops forever on a dead session
+        stop()
+    }
     override fun onAuthError() { onError("RTSP auth error") }
     override fun onAuthSuccess() {}
 }
