@@ -133,6 +133,8 @@ class CamService : Service(), LifecycleOwner {
         val streamer = rtspStreamer ?: return@Runnable
         if (!streamer.isStreaming || deviceRotation == appliedRotation) return@Runnable
         Log.i("CamService", "rotation changed to $deviceRotation, restarting stream")
+        // viewers reconnect immediately instead of waiting for ICE failure
+        wsClient.sendText("EVENT:STREAM_RESTART")
         streamer.stop()
         handler.postDelayed({ tryStartStream() }, 500)
     }

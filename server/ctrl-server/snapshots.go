@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 )
 
@@ -46,6 +47,9 @@ func listSnapshots(dir string) http.HandlerFunc {
 			}
 			return nil
 		})
+		// day dirs and millisecond filenames sort lexicographically in
+		// chronological order, so reversing yields newest first
+		sort.Sort(sort.Reverse(sort.StringSlice(files)))
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(files)
 	}

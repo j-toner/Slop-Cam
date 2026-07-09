@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- soft glow halo -->
+    <item>
+        <shape android:shape="oval">
+            <gradient
+                android:type="radial"
+                android:gradientRadius="7dp"
+                android:startColor="#B3FF1744"
+                android:endColor="#00FF1744" />
+        </shape>
+    </item>
+    <!-- solid core -->
+    <item
+        android:top="4dp" android:bottom="4dp"
+        android:left="4dp" android:right="4dp">
+        <shape android:shape="oval">
+            <solid android:color="#FF1744" />
+        </shape>
+    </item>
+</layer-list>

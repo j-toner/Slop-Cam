@@ -7,6 +7,11 @@ import android.view.ViewGroup
 import android.widget.*
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.PlayerView
 import androidx.preference.PreferenceManager
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import com.bumptech.glide.Glide
@@ -15,6 +20,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class SnapshotsActivity : AppCompatActivity() {
     private val client = OkHttpClient()
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -24,7 +30,8 @@ class SnapshotsActivity : AppCompatActivity() {
     private lateinit var grid: GridView
     private lateinit var viewer: FrameLayout
     private lateinit var viewerImage: ImageView
-    private lateinit var viewerVideo: VideoView
+    private lateinit var viewerVideo: PlayerView
+    private var player: ExoPlayer? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -43,9 +50,6 @@ class SnapshotsActivity : AppCompatActivity() {
         viewer = findViewById(R.id.viewer)
         viewerImage = findViewById(R.id.viewerImage)
         viewerVideo = findViewById(R.id.viewerVideo)
-        viewerVideo.setMediaController(MediaController(this).apply {
-            setAnchorView(viewerVideo)
-        })
 
         swipe.setColorSchemeColors(getColor(R.color.neon))
         swipe.setProgressBackgroundColorSchemeColor(getColor(R.color.surface))
@@ -96,17 +100,25 @@ class SnapshotsActivity : AppCompatActivity() {
         viewerImage.visibility = View.GONE
         viewerVideo.visibility = View.VISIBLE
         viewer.visibility = View.VISIBLE
-        viewerVideo.setVideoURI(android.net.Uri.parse(url))
-        viewerVideo.setOnPreparedListener { it.start() }
-        viewerVideo.setOnErrorListener { _, _, _ ->
-            Toast.makeText(this, "Playback failed", Toast.LENGTH_SHORT).show()
-            closeViewer()
-            true
+        val p = player ?: ExoPlayer.Builder(this).build().also {
+            player = it
+            viewerVideo.player = it
+            it.addListener(object : Player.Listener {
+                override fun onPlayerError(error: PlaybackException) {
+                    Toast.makeText(this@SnapshotsActivity,
+                        "Playback failed: ${error.errorCodeName}", Toast.LENGTH_SHORT).show()
+                    closeViewer()
+                }
+            })
         }
+        p.setMediaItem(MediaItem.fromUri(url))
+        p.prepare()
+        p.play()
     }
 
     private fun closeViewer() {
-        viewerVideo.stopPlayback()
+        player?.pause()
+        player?.clearMediaItems()
         Glide.with(this).clear(viewerImage)
         viewer.visibility = View.GONE
     }
@@ -134,7 +146,12 @@ class SnapshotsActivity : AppCompatActivity() {
         }
     }
 
-    override fun onDestroy() { scope.cancel(); super.onDestroy() }
+    override fun onDestroy() {
+        player?.release()
+        player = null
+        scope.cancel()
+        super.onDestroy()
+    }
 }
 
 class SnapshotAdapter(

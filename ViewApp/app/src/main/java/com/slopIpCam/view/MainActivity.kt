@@ -1,6 +1,8 @@
 package com.slopIpCam.view
 
 import android.Manifest
+import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -9,6 +11,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.view.View
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -85,6 +88,15 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnSettings).setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
+
+        // glowing pulse on the REC dot; the chip is only visible while
+        // security recording is enabled (see updateRecIndicator)
+        ObjectAnimator.ofFloat(findViewById<View>(R.id.recDot), View.ALPHA, 1f, 0.25f).apply {
+            duration = 800
+            repeatMode = ValueAnimator.REVERSE
+            repeatCount = ValueAnimator.INFINITE
+            start()
+        }
     }
 
     // onStart runs both on first launch and on return from Settings, so a
@@ -95,7 +107,14 @@ class MainActivity : AppCompatActivity() {
         // if already connected, push toggle changes now; a fresh connection
         // syncs from its onConnected callback instead
         syncCamConfig()
+        updateRecIndicator()
         requestNotifPermissionIfNeeded()
+    }
+
+    private fun updateRecIndicator() {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        findViewById<View>(R.id.recChip).visibility =
+            if (prefs.getBoolean("security_mode", false)) View.VISIBLE else View.GONE
     }
 
     /**
@@ -237,17 +256,8 @@ class MainActivity : AppCompatActivity() {
                 override fun onConnectionChange(s: PeerConnection.PeerConnectionState) {
                     if (s == PeerConnection.PeerConnectionState.CONNECTED) setStatus("Streaming")
                     else if (s == PeerConnection.PeerConnectionState.FAILED) {
-                        // cam restarted its stream (e.g. it was rotated) —
-                        // tear down and redo the WHEP dance, which retries
-                        // until the cam publishes again
                         setStatus("Stream lost, reconnecting...")
-                        val base = activeMediamtxBase ?: return
-                        scope.launch {
-                            webRtcJob?.cancelAndJoin()
-                            peerConnection?.dispose()
-                            peerConnection = null
-                            webRtcJob = launch(Dispatchers.IO) { startWebRtc(base) }
-                        }
+                        restartStream()
                     }
                 }
             }
@@ -312,8 +322,32 @@ class MainActivity : AppCompatActivity() {
         }, SessionDescription(SessionDescription.Type.ANSWER, answerSdp))
     }
 
+    /** Tear down the WebRTC session and renderer, then redo WHEP until video returns. */
+    private fun restartStream() {
+        val base = activeMediamtxBase ?: return
+        scope.launch {
+            webRtcJob?.cancelAndJoin()
+            peerConnection?.dispose()
+            peerConnection = null
+            // re-init the renderer: SurfaceViewRenderer can keep the old
+            // frame's aspect after the stream resolution changes (cam
+            // rotated), which displays the new stream cropped
+            renderer.release()
+            renderer.init(eglBase.eglBaseContext, null)
+            renderer.setMirror(false)
+            renderer.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
+            webRtcJob = launch(Dispatchers.IO) { startWebRtc(base) }
+        }
+    }
+
     private fun handleServerMsg(msg: String) {
         when {
+            msg == "EVENT:STREAM_RESTART" -> {
+                // cam is restarting its stream (rotation) — reconnect now
+                // rather than waiting ~15s for ICE to notice the drop
+                setStatus("Cam restarting stream...")
+                restartStream()
+            }
             msg == "EVENT:MOTION" -> {
                 val prefs = PreferenceManager.getDefaultSharedPreferences(this)
                 if (prefs.getBoolean("motion_notify", false)) notifyMotion()

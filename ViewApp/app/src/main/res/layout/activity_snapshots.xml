@@ -94,11 +94,10 @@
             android:layout_height="match_parent"
             android:scaleType="fitCenter" />
 
-        <VideoView
+        <androidx.media3.ui.PlayerView
             android:id="@+id/viewerVideo"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:layout_gravity="center"
             android:visibility="gone" />
 
         <TextView
