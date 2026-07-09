@@ -124,6 +124,7 @@ func filesWithDelete(dir string) http.Handler {
 			http.Error(w, "delete failed", http.StatusInternalServerError)
 			return
 		}
+		os.Remove(target + ".jpg") // drop the gallery thumbnail with it
 		log.Printf("deleted %s", rel)
 		w.WriteHeader(http.StatusNoContent)
 	})

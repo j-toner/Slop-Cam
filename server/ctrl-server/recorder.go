@@ -20,6 +20,12 @@ import (
 var allowedFps = map[string]bool{"0.5": true, "1": true, "2": true, "5": true}
 var allowedRes = map[string]string{"360p": "360", "480p": "480", "720p": "720"}
 
+// wall-clock timestamp burned along the bottom edge; single quotes shield
+// the %{} block from the filtergraph parser so drawtext expands the \:
+const drawtextStamp = "drawtext=fontfile=/usr/share/fonts/dejavu/DejaVuSans.ttf" +
+	":text='%{localtime\\:%F %T}':fontcolor=white@0.9:fontsize=h/24" +
+	":box=1:boxcolor=black@0.4:boxborderw=6:x=10:y=h-th-10"
+
 // Recorder supervises an ffmpeg process that pulls the RTSP stream and
 // re-encodes it into small low-fps H.265 segments for security-camera mode.
 type Recorder struct {
@@ -112,15 +118,10 @@ func (r *Recorder) buildCmd(fps, height string) *exec.Cmd {
 		"-rtsp_transport", "tcp",
 		"-i", r.rtspURL,
 		// scale the *short* side to the target so portrait and landscape
-		// sources keep comparable detail (854x480 or 480x854 for "480p"),
-		// then burn a wall-clock timestamp along the bottom edge
+		// sources keep comparable detail (854x480 or 480x854 for "480p")
 		"-vf", "fps=" + fps + ",scale=" + height + ":" + height +
 			":force_original_aspect_ratio=increase:force_divisible_by=2" +
-			// single quotes shield the %{} block from the filtergraph
-			// parser so drawtext itself gets to expand the \: sequence
-			",drawtext=fontfile=/usr/share/fonts/dejavu/DejaVuSans.ttf" +
-			":text='%{localtime\\:%F %T}':fontcolor=white@0.9:fontsize=h/24" +
-			":box=1:boxcolor=black@0.4:boxborderw=6:x=10:y=h-th-10",
+			"," + drawtextStamp,
 		"-c:v", "libx265", "-preset", "medium", "-crf", r.crf,
 		"-tag:v", "hvc1",
 		"-g", "60", // keyframe cadence so hourly segments can actually split
@@ -228,11 +229,17 @@ func (c *ClipRecorder) run(gen int, kind string, maxSeconds int, onDone func()) 
 		}
 		out := filepath.Join(c.dir,
 			"clip_"+kind+"_"+time.Now().Format("2006-01-02_15-04-05")+".mp4")
+		// re-encode rather than -c copy: copying an RTSP session joined
+		// mid-GOP leaves broken NAL units that players die on partway
+		// through; a 10s x264 encode is nothing for the server and gets
+		// the timestamp overlay for free
 		args := []string{
 			"-hide_banner", "-loglevel", "error",
 			"-rtsp_transport", "tcp",
 			"-i", c.rtspURL,
-			"-c", "copy",
+			"-vf", drawtextStamp,
+			"-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+			"-c:a", "aac", "-b:a", "96k",
 			"-movflags", "+frag_keyframe+empty_moov+default_base_moof",
 		}
 		if maxSeconds > 0 {
@@ -284,7 +291,8 @@ func remuxFinishedSegments(dir string, now time.Time) {
 		}
 		path := filepath.Join(dir, e.Name())
 		if !isFragmentedMp4(path) {
-			continue // already remuxed
+			makeThumb(path) // backfill thumbnails for finished files
+			continue        // already remuxed
 		}
 		tmp := path + ".remuxtmp" // non-.mp4 suffix keeps it out of listings
 		cmd := exec.Command("ffmpeg", "-y", "-v", "error",
@@ -301,6 +309,23 @@ func remuxFinishedSegments(dir string, now time.Time) {
 			continue
 		}
 		log.Printf("remuxed %s for seeking", e.Name())
+		makeThumb(path)
+	}
+}
+
+// makeThumb writes a small first-frame jpg next to the video ("<name>.jpg")
+// for the gallery grid; no-op if it already exists.
+func makeThumb(path string) {
+	thumb := path + ".jpg"
+	if _, err := os.Stat(thumb); err == nil {
+		return
+	}
+	cmd := exec.Command("ffmpeg", "-y", "-v", "error",
+		"-i", path, "-frames:v", "1", "-vf", "scale=320:-2", thumb)
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		log.Printf("thumb %s: %v", filepath.Base(path), err)
+		os.Remove(thumb)
 	}
 }
 
@@ -325,7 +350,8 @@ func pruneRecordings(dir string, retentionDays int, now time.Time) error {
 	}
 	cutoff := now.AddDate(0, 0, -retentionDays)
 	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".mp4" {
+		ext := filepath.Ext(e.Name())
+		if e.IsDir() || (ext != ".mp4" && ext != ".jpg") {
 			continue
 		}
 		info, err := e.Info()

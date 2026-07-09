@@ -51,34 +51,86 @@ class RtspStreamer(
         stream.getGlInterface().takePhoto { bmp -> cb(bmp) }
     }
 
+    private var currentPhysical: String? = null
+
     /**
      * Toggle between the main and ultra-wide back lenses while streaming.
-     * Widest = shortest focal length. Returns the label of the lens now in
-     * use, or null if switching isn't possible right now.
+     * Widest = shortest focal length. Pixels usually expose one logical
+     * back camera and hide the ultra-wide as a physical sub-camera, so
+     * fall back to physical switching when there's only one logical id.
+     * Returns the label of the lens now in use, or null on failure.
      */
     fun toggleLens(): String? {
         if (!stream.isStreaming) return null
         val source = stream.videoSource as? Camera2Source ?: return null
         val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val focal = { id: String ->
+            try {
+                cm.getCameraCharacteristics(id)
+                    .get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                    ?.minOrNull() ?: Float.MAX_VALUE
+            } catch (e: Exception) { Float.MAX_VALUE }
+        }
         val backIds = cm.cameraIdList.filter {
             cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) ==
                 CameraCharacteristics.LENS_FACING_BACK
         }
-        if (backIds.size < 2) return null
-        val sorted = backIds.sortedBy {
-            cm.getCameraCharacteristics(it)
-                .get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
-                ?.minOrNull() ?: Float.MAX_VALUE
-        }
-        val wide = sorted.first()
-        val next = if (source.getCurrentCameraId() == wide) sorted.last() else wide
         return try {
-            source.openCameraId(next)
-            if (next == wide) "ultra-wide" else "main"
+            if (backIds.size >= 2) {
+                val sorted = backIds.sortedBy(focal)
+                val wide = sorted.first()
+                val next = if (source.getCurrentCameraId() == wide) sorted.last() else wide
+                source.openCameraId(next)
+                if (next == wide) "ultra-wide" else "main"
+            } else {
+                val physical = source.physicalCamerasAvailable()
+                if (physical.size < 2) {
+                    Log.w("RtspStreamer", "no second lens exposed")
+                    return null
+                }
+                val sorted = physical.sortedBy(focal)
+                val wide = sorted.first()
+                val next = if (currentPhysical == wide) sorted.last() else wide
+                source.openPhysicalCamera(next)
+                currentPhysical = next
+                if (next == wide) "ultra-wide" else "main"
+            }
         } catch (e: Exception) {
             Log.e("RtspStreamer", "lens switch failed: ${e.message}")
             null
         }
+    }
+
+    /**
+     * Tap the stream's camera frames for motion analysis (Y plane + dims).
+     * Runs on the ImageReader thread; the camera stays owned by the stream.
+     */
+    fun addMotionFrameListener(cb: (ByteArray, Int, Int, Int) -> Unit): Boolean {
+        val source = stream.videoSource as? Camera2Source ?: return false
+        return try {
+            source.addImageListener(320, 240, false,
+                object : com.pedro.encoder.input.video.Camera2ApiManager.ImageCallback {
+                    override fun onImageAvailable(image: android.media.Image) {
+                        try {
+                            val plane = image.planes[0]
+                            val buf = plane.buffer
+                            val luma = ByteArray(buf.remaining())
+                            buf.get(luma)
+                            cb(luma, image.width, image.height, plane.rowStride)
+                        } finally {
+                            runCatching { image.close() }
+                        }
+                    }
+                })
+            true
+        } catch (e: Exception) {
+            Log.e("RtspStreamer", "addImageListener failed: ${e.message}")
+            false
+        }
+    }
+
+    fun removeMotionFrameListener() {
+        runCatching { (stream.videoSource as? Camera2Source)?.removeImageListener() }
     }
 
     /** Torch control while the stream owns the camera device. */

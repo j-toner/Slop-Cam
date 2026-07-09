@@ -1,26 +1,35 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="110dp"
     android:background="@drawable/bg_thumb"
     android:clipToOutline="true"
-    android:foreground="?attr/selectableItemBackground"
-    android:gravity="center"
-    android:orientation="vertical">
+    android:foreground="?attr/selectableItemBackground">
+
+    <ImageView
+        android:id="@+id/imgClipThumb"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="centerCrop" />
 
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:shadowColor="#CC000000"
+        android:shadowRadius="8"
         android:text="▶"
         android:textColor="@color/neon"
-        android:textSize="22sp" />
+        android:textSize="20sp" />
 
     <TextView
         android:id="@+id/tvClipDate"
-        android:layout_width="wrap_content"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="6dp"
+        android:layout_gravity="bottom"
+        android:background="#99000000"
         android:gravity="center"
+        android:paddingVertical="3dp"
         android:textColor="@color/text"
-        android:textSize="11sp" />
-</LinearLayout>
+        android:textSize="10sp" />
+</FrameLayout>

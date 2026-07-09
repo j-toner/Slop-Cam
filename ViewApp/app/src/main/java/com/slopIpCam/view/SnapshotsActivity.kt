@@ -222,6 +222,10 @@ class SnapshotAdapter(
             view = convertView ?: LayoutInflater.from(context)
                 .inflate(R.layout.item_clip, parent, false)
             view.findViewById<TextView>(R.id.tvClipDate).text = clipLabel(urls[pos])
+            // the server writes "<video>.jpg" next to each finished segment;
+            // in-progress ones just show the dark cell + play glyph
+            Glide.with(context).load(urls[pos] + ".jpg")
+                .into(view.findViewById(R.id.imgClipThumb))
         } else {
             val img = (convertView as? ImageView)
                 ?: LayoutInflater.from(context)

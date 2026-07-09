@@ -249,11 +249,51 @@ class CamService : Service(), LifecycleOwner {
                 if (on && !streaming && cameraProvider == null) startMotionWatch()
                 else if ((!on || streaming) && cameraProvider != null && !oneShotSnapshot)
                     stopMotionWatch() // keep camera bound while a one-shot is pending
+                // while streaming the stream owns the camera, so motion
+                // detection taps the stream's own frames instead
+                setStreamMotionWatch(on && streaming)
                 handler.postDelayed(this, 2000)
             }
         }
         pollRunnable = r
         handler.post(r)
+    }
+
+    private var streamMotionAttached = false
+    private var streamPrevLuma: ByteArray? = null
+
+    private fun setStreamMotionWatch(on: Boolean) {
+        if (on == streamMotionAttached) return
+        val streamer = rtspStreamer ?: return
+        if (on) {
+            if (streamer.addMotionFrameListener { luma, w, h, stride ->
+                    onStreamMotionFrame(luma, w, h, stride)
+                }) streamMotionAttached = true
+        } else {
+            streamer.removeMotionFrameListener()
+            streamMotionAttached = false
+            streamPrevLuma = null
+        }
+    }
+
+    // runs on the camera ImageReader thread
+    private fun onStreamMotionFrame(luma: ByteArray, w: Int, h: Int, stride: Int) {
+        val prev = streamPrevLuma
+        streamPrevLuma = luma
+        if (prev == null || prev.size != luma.size) return
+        if (!motionDetector.analyze(luma, prev, w, h, stride)) return
+        val now = System.currentTimeMillis()
+        if (now - lastMotionEventMs >= 5000) {
+            lastMotionEventMs = now
+            wsClient.sendText("EVENT:MOTION")
+        }
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val intervalMs = (prefs.getString("snapshot_interval_s", "30")?.toLongOrNull() ?: 30L) * 1000L
+        if (now - lastSnapshotMs >= intervalMs) {
+            lastSnapshotMs = now
+            // GL pipeline frame is already upright
+            rtspStreamer?.takePhoto { bmp -> analysisExecutor.execute { sendSnapshot(bmp) } }
+        }
     }
 
     private fun startMotionWatch() {
@@ -375,6 +415,7 @@ class CamService : Service(), LifecycleOwner {
         stopMotionWatch()
         lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         wsClient.disconnect()
+        rtspStreamer?.removeMotionFrameListener()
         rtspStreamer?.stop()
         pttPlayer.release()
         analysisExecutor.shutdown()
