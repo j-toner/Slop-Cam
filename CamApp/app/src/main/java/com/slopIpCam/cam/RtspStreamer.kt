@@ -4,11 +4,12 @@ import android.content.Context
 import android.util.Log
 import com.pedro.common.ConnectChecker
 import com.pedro.encoder.input.sources.video.Camera2Source
+import com.pedro.encoder.input.video.CameraHelper
 import com.pedro.library.rtsp.RtspStream
 import com.pedro.rtsp.rtsp.Protocol
 
 class RtspStreamer(
-    context: Context,
+    private val context: Context,
     private val onError: (String) -> Unit = {}
 ) : ConnectChecker {
     private val stream = RtspStream(context, this)
@@ -18,7 +19,11 @@ class RtspStreamer(
     fun start(rtspUrl: String, width: Int = 1280, height: Int = 720, bitrateBps: Int = 2_000_000) {
         if (stream.isStreaming) return
         stream.prepareAudio(44100, true, 128_000)
-        if (!stream.prepareVideo(width, height, bitrateBps)) {
+        // match the encoded frame to the phone's orientation at stream start —
+        // rotation 90/270 swaps encoder dims to portrait, otherwise the GL
+        // pipeline squeezes the rotated image into a landscape frame
+        val rotation = CameraHelper.getCameraOrientation(context)
+        if (!stream.prepareVideo(width, height, bitrateBps, rotation = rotation)) {
             onError("prepareVideo failed")
             return
         }

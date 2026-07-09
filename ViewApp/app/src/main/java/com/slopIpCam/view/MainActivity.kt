@@ -8,6 +8,9 @@ import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.preference.PreferenceManager
 import kotlinx.coroutines.*
 import org.webrtc.*
@@ -25,6 +28,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        enterFullscreen()
 
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val resolution = prefs.getString("stream_resolution", "720p") ?: "720p"
@@ -37,6 +41,8 @@ class MainActivity : AppCompatActivity() {
         renderer = findViewById(R.id.webrtcView)
         renderer.init(eglBase.eglBaseContext, null)
         renderer.setMirror(false)
+        // show the whole frame at true aspect; letterbox only where unavoidable
+        renderer.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
 
         PeerConnectionFactory.initialize(
             PeerConnectionFactory.InitializationOptions.builder(this).createInitializationOptions()
@@ -94,6 +100,21 @@ class MainActivity : AppCompatActivity() {
 
     private fun setStatus(text: String) {
         runOnUiThread { findViewById<TextView>(R.id.tvStatus).text = text }
+    }
+
+    /** Edge-to-edge video: hide status/nav bars, swipe from an edge peeks them back. */
+    private fun enterFullscreen() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) enterFullscreen() // re-hide bars after dialogs/app switches
     }
 
     /** Called on every WS (re)connect — reuse a healthy PeerConnection, rebuild a dead one. */

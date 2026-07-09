@@ -1,21 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent" android:layout_height="match_parent"
-    android:orientation="vertical" android:background="#000">
+    android:background="#000">
 
     <org.webrtc.SurfaceViewRenderer
         android:id="@+id/webrtcView"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1" />
+        android:layout_height="match_parent" />
 
-    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:orientation="horizontal" android:padding="8dp"
-        android:background="#222">
+    <TextView android:id="@+id/tvStatus"
+        android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:layout_gravity="top|start" android:layout_margin="12dp"
+        android:paddingHorizontal="8dp" android:paddingVertical="4dp"
+        android:background="#66000000"
+        android:text="Disconnected" android:textColor="#fff" />
 
-        <TextView android:id="@+id/tvStatus" android:layout_width="0dp"
-            android:layout_height="wrap_content" android:layout_weight="1"
-            android:text="Disconnected" android:textColor="#fff" />
+    <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:layout_gravity="bottom|end" android:layout_margin="8dp"
+        android:orientation="horizontal" android:alpha="0.75">
 
         <ToggleButton android:id="@+id/btnFlashlight"
             android:layout_width="wrap_content" android:layout_height="wrap_content"
@@ -37,4 +39,4 @@
             android:layout_width="wrap_content" android:layout_height="wrap_content"
             android:text="⚙" />
     </LinearLayout>
-</LinearLayout>
+</FrameLayout>
