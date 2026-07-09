@@ -17,7 +17,9 @@ import org.webrtc.*
 
 class MainActivity : AppCompatActivity() {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-    private lateinit var wsClient: WsClient
+    private var wsClient: WsClient? = null
+    private var activeWsUrl: String? = null
+    private var activeMediamtxBase: String? = null
     private lateinit var pttRecorder: PttRecorder
     private var peerConnectionFactory: PeerConnectionFactory? = null
     private var peerConnection: PeerConnection? = null
@@ -29,13 +31,6 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         enterFullscreen()
-
-        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        val resolution = prefs.getString("stream_resolution", "720p") ?: "720p"
-        val wsUrl = (prefs.getString("ctrl_server_url", "ws://100.x.x.x:8080/ws")
-            ?: "ws://100.x.x.x:8080/ws") + "?role=viewer&res=$resolution"
-        val mediamtxBase = prefs.getString("mediamtx_base_url", "http://100.x.x.x:8889")
-            ?: "http://100.x.x.x:8889"
 
         eglBase = EglBase.create()
         renderer = findViewById(R.id.webrtcView)
@@ -51,21 +46,10 @@ class MainActivity : AppCompatActivity() {
             .setVideoDecoderFactory(DefaultVideoDecoderFactory(eglBase.eglBaseContext))
             .createPeerConnectionFactory()
 
-        pttRecorder = PttRecorder { pcm -> wsClient.sendBinary(pcm) }
-
-        wsClient = WsClient(
-            url = wsUrl,
-            onText = { msg -> handleServerMsg(msg) },
-            onConnected = {
-                setStatus("Connected")
-                restartWebRtcIfNeeded(mediamtxBase)
-            },
-            onDisconnected = { setStatus("Reconnecting...") }
-        )
-        wsClient.connect()
+        pttRecorder = PttRecorder { pcm -> wsClient?.sendBinary(pcm) }
 
         findViewById<ToggleButton>(R.id.btnFlashlight).setOnCheckedChangeListener { _, on ->
-            wsClient.sendText(if (on) "CMD:FLASHLIGHT_ON" else "CMD:FLASHLIGHT_OFF")
+            wsClient?.sendText(if (on) "CMD:FLASHLIGHT_ON" else "CMD:FLASHLIGHT_OFF")
         }
 
         val pttBtn = findViewById<Button>(R.id.btnPtt)
@@ -86,7 +70,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         findViewById<Button>(R.id.btnSnap).setOnClickListener {
-            wsClient.sendText("CMD:SNAPSHOT")
+            wsClient?.sendText("CMD:SNAPSHOT")
             Toast.makeText(this, "Snapshot requested", Toast.LENGTH_SHORT).show()
         }
 
@@ -95,6 +79,46 @@ class MainActivity : AppCompatActivity() {
         }
         findViewById<Button>(R.id.btnSettings).setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
+        }
+    }
+
+    // onStart runs both on first launch and on return from Settings, so a
+    // changed server address / resolution takes effect without an app restart
+    override fun onStart() {
+        super.onStart()
+        reconnectIfConfigChanged()
+    }
+
+    private fun reconnectIfConfigChanged() {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val resolution = prefs.getString("stream_resolution", "720p") ?: "720p"
+        val wsUrl = (prefs.getString("ctrl_server_url", "ws://100.x.x.x:8080/ws")
+            ?: "ws://100.x.x.x:8080/ws") + "?role=viewer&res=$resolution"
+        val mediamtxBase = prefs.getString("mediamtx_base_url", "http://100.x.x.x:8889")
+            ?: "http://100.x.x.x:8889"
+        if (wsUrl == activeWsUrl && mediamtxBase == activeMediamtxBase) return
+        activeWsUrl = wsUrl
+        activeMediamtxBase = mediamtxBase
+
+        setStatus("Connecting...")
+        wsClient?.disconnect()
+        scope.launch {
+            // stop a WHEP retry loop still aimed at the old address
+            webRtcJob?.cancelAndJoin()
+            webRtcJob = null
+            peerConnection?.dispose()
+            peerConnection = null
+            val client = WsClient(
+                url = wsUrl,
+                onText = { msg -> handleServerMsg(msg) },
+                onConnected = {
+                    setStatus("Connected")
+                    restartWebRtcIfNeeded(mediamtxBase)
+                },
+                onDisconnected = { setStatus("Reconnecting...") }
+            )
+            wsClient = client
+            client.connect()
         }
     }
 
@@ -230,7 +254,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        wsClient.disconnect()
+        wsClient?.disconnect()
         pttRecorder.stop()
         webRtcJob?.cancel()
         peerConnection?.dispose()
