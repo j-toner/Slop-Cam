@@ -76,10 +76,22 @@ func (r *Recorder) Stop() {
 	log.Println("recorder: stopped")
 }
 
+// Reconnect backoff: motion-triggered starts race the cam's stream spin-up,
+// so the first connects fail (404) and must be retried fast — a flat 5s
+// sleep here ate half the 10s motion window and produced ~5s clips. The
+// delay doubles up to the cap so a long-offline cam isn't hammered, and
+// resets once ffmpeg has recorded for a while.
+const (
+	recorderRetryMin     = 500 * time.Millisecond
+	recorderRetryMax     = 5 * time.Second
+	recorderHealthyAfter = 10 * time.Second
+)
+
 // supervise restarts ffmpeg while recording is active — the process exits
 // whenever the cam stops publishing (reboot, network drop) and must resume
 // when the stream comes back.
 func (r *Recorder) supervise(gen int, fps, height string) {
+	delay := recorderRetryMin
 	for {
 		r.mu.Lock()
 		if !r.active || r.gen != gen {
@@ -93,12 +105,16 @@ func (r *Recorder) supervise(gen int, fps, height string) {
 		}
 		r.mu.Unlock()
 
+		started := time.Now()
 		if err != nil {
 			log.Printf("recorder: ffmpeg start: %v", err)
 		} else {
 			if werr := cmd.Wait(); werr != nil {
 				log.Printf("recorder: ffmpeg exited: %v", werr)
 			}
+		}
+		if time.Since(started) >= recorderHealthyAfter {
+			delay = recorderRetryMin // it was recording fine; reattach fast
 		}
 
 		r.mu.Lock()
@@ -107,7 +123,10 @@ func (r *Recorder) supervise(gen int, fps, height string) {
 		if !stillActive {
 			return
 		}
-		time.Sleep(5 * time.Second)
+		time.Sleep(delay)
+		if delay *= 2; delay > recorderRetryMax {
+			delay = recorderRetryMax
+		}
 	}
 }
 

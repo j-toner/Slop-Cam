@@ -19,6 +19,12 @@ const defaultResolution = "720p"
 // detected motion before it auto-stops. A package var so tests can shorten it.
 var motionIdleDuration = 10 * time.Second
 
+// motionSpinupGrace pads the first idle timer when a motion event has to
+// cold-start the stream: the cam's RTSP publish plus the recorder's connect
+// take a few seconds, and without the pad that spin-up is silently deducted
+// from the recording window (clips came out ~5s instead of ~10s).
+var motionSpinupGrace = 5 * time.Second
+
 type securityState struct {
 	On        bool   `json:"on"`
 	Fps       string `json:"fps"`
@@ -238,7 +244,13 @@ func (h *Hub) onMotionEvent() {
 	if !h.motionRec || h.cam == nil {
 		return
 	}
+	idle := motionIdleDuration
 	if !h.motionActive {
+		if !h.streaming {
+			// cold start: the publish + recorder connect take a few seconds
+			// that must not count against the recording window
+			idle += motionSpinupGrace
+		}
 		h.motionActive = true
 		if h.recorder != nil {
 			if h.recFps == "" {
@@ -254,7 +266,7 @@ func (h *Hub) onMotionEvent() {
 	if h.motionTimer != nil {
 		h.motionTimer.Stop()
 	}
-	h.motionTimer = time.AfterFunc(motionIdleDuration, h.motionExpired)
+	h.motionTimer = time.AfterFunc(idle, h.motionExpired)
 }
 
 // motionExpired runs after motionIdleDuration of no motion; drop motion

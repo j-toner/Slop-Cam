@@ -214,7 +214,11 @@ func TestMotionRecIndependentOfSnapshots(t *testing.T) {
 
 func TestMotionRecStartsAndStopsStream(t *testing.T) {
 	motionIdleDuration = 100 * time.Millisecond
-	defer func() { motionIdleDuration = 10 * time.Second }()
+	motionSpinupGrace = 0
+	defer func() {
+		motionIdleDuration = 10 * time.Second
+		motionSpinupGrace = 5 * time.Second
+	}()
 	_, srv := newTestServer(t)
 	cam := wsConnect(t, srv, "cam")
 	time.Sleep(50 * time.Millisecond)
@@ -239,6 +243,46 @@ func TestMotionRecStartsAndStopsStream(t *testing.T) {
 	// and — with no viewer — the stream is stopped too
 	if msg := readMsg(t, cam); msg != "CMD:STOP_STREAM" {
 		t.Errorf("got %q, want CMD:STOP_STREAM", msg)
+	}
+}
+
+// A motion event that has to cold-start the stream must not have the cam's
+// publish spin-up counted against the recording window: the first idle timer
+// is armed with motionIdleDuration + motionSpinupGrace, otherwise a single
+// motion event yields a clip that starts late and lasts only a few seconds.
+func TestMotionColdStartExtendsIdleWindow(t *testing.T) {
+	motionIdleDuration = 100 * time.Millisecond
+	motionSpinupGrace = 500 * time.Millisecond
+	defer func() {
+		motionIdleDuration = 10 * time.Second
+		motionSpinupGrace = 5 * time.Second
+	}()
+	_, srv := newTestServer(t)
+	cam := wsConnect(t, srv, "cam")
+	time.Sleep(50 * time.Millisecond)
+	ctx := context.Background()
+
+	viewer := wsConnect(t, srv, "viewer")
+	readMsg(t, cam) // drain START_STREAM (viewer connect)
+	viewer.Write(ctx, websocket.MessageText, []byte("CMD:MOTION_REC_ON:1:480p"))
+	readMsg(t, cam) // drain CMD:MOTION:snap=0:detect=1
+	viewer.Close(websocket.StatusNormalClosure, "bye")
+	readMsg(t, cam) // drain STOP_STREAM from the viewer leaving
+
+	// motion while idle: stream cold-starts...
+	start := time.Now()
+	cam.Write(ctx, websocket.MessageText, []byte("EVENT:MOTION"))
+	if msg := readMsg(t, cam); msg != "CMD:START_STREAM:720p" {
+		t.Errorf("got %q, want CMD:START_STREAM:720p", msg)
+	}
+
+	// ...and the stop must come after idle+grace (600ms), not after the bare
+	// idle duration (100ms) — the spin-up grace protects the recording window
+	if msg := readMsg(t, cam); msg != "CMD:STOP_STREAM" {
+		t.Errorf("got %q, want CMD:STOP_STREAM", msg)
+	}
+	if elapsed := time.Since(start); elapsed < 550*time.Millisecond {
+		t.Errorf("motion recording stopped after %v, want >= idle+grace (600ms)", elapsed)
 	}
 }
 
