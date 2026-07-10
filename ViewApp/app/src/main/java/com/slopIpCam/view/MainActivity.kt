@@ -153,10 +153,13 @@ class MainActivity : AppCompatActivity() {
             )
         }
         if (prefs.contains("motion_record")) {
-            wsClient?.sendText(
-                if (prefs.getBoolean("motion_record", false)) "CMD:MOTION_REC_ON"
-                else "CMD:MOTION_REC_OFF"
-            )
+            if (prefs.getBoolean("motion_record", false)) {
+                val fps = prefs.getString("record_fps", "1")
+                val res = prefs.getString("record_resolution", "480p")
+                wsClient?.sendText("CMD:MOTION_REC_ON:$fps:$res")
+            } else {
+                wsClient?.sendText("CMD:MOTION_REC_OFF")
+            }
         }
         if (prefs.contains("security_mode")) {
             if (prefs.getBoolean("security_mode", false)) {

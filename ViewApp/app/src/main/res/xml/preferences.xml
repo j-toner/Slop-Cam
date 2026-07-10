@@ -35,7 +35,7 @@
         <SwitchPreferenceCompat
             app:key="motion_record"
             app:title="Motion recording"
-            app:summary="Record a 10s full-quality clip on motion; keeps going while motion continues. Needs motion snapshots on."
+            app:summary="Record continuously (low-fps) while motion is detected; stops 10s after motion ends. Works without snapshots."
             app:defaultValue="false" />
     </PreferenceCategory>
 
@@ -51,7 +51,6 @@
             app:entries="@array/record_fps_entries"
             app:entryValues="@array/record_fps_values"
             app:defaultValue="1"
-            app:dependency="security_mode"
             app:useSimpleSummaryProvider="true" />
         <ListPreference
             app:key="record_resolution"
@@ -59,7 +58,6 @@
             app:entries="@array/record_resolutions"
             app:entryValues="@array/record_resolutions"
             app:defaultValue="480p"
-            app:dependency="security_mode"
             app:useSimpleSummaryProvider="true" />
     </PreferenceCategory>
 </PreferenceScreen>

@@ -143,14 +143,32 @@ func TestSecurityModeKeepsStreamWithoutViewers(t *testing.T) {
 	cam := wsConnect(t, srv, "cam")
 	viewer := wsConnect(t, srv, "viewer")
 	time.Sleep(50 * time.Millisecond)
-	readMsg(t, cam) // drain START_STREAM
+	readMsg(t, cam) // drain START_STREAM from viewer connect
 
 	ctx := context.Background()
+	// turning security on while already streaming must NOT restart the
+	// stream (that freeze was the old bug) — no second START_STREAM.
 	viewer.Write(ctx, websocket.MessageText, []byte("CMD:SECURITY_ON:1:480p"))
-	readMsg(t, cam) // drain the (idempotent) START_STREAM security mode re-sends
+	expectNoMsg(t, cam)
 
 	viewer.Close(websocket.StatusNormalClosure, "bye")
 	expectNoMsg(t, cam) // no STOP_STREAM while security mode is on
+}
+
+func TestSecurityOnNoRedundantStartWhileStreaming(t *testing.T) {
+	_, srv := newTestServer(t)
+	cam := wsConnect(t, srv, "cam")
+	viewer := wsConnect(t, srv, "viewer")
+	time.Sleep(50 * time.Millisecond)
+	readMsg(t, cam) // drain START_STREAM from viewer connect
+
+	// a re-sync of security mode (e.g. viewer reconnect) must not restart
+	// the already-running stream
+	for i := 0; i < 3; i++ {
+		viewer.Write(context.Background(), websocket.MessageText,
+			[]byte("CMD:SECURITY_ON:1:480p"))
+		expectNoMsg(t, cam)
+	}
 }
 
 func TestSecurityOffStopsStreamWithoutViewers(t *testing.T) {
@@ -158,20 +176,67 @@ func TestSecurityOffStopsStreamWithoutViewers(t *testing.T) {
 	cam := wsConnect(t, srv, "cam")
 	viewer := wsConnect(t, srv, "viewer")
 	time.Sleep(50 * time.Millisecond)
-	readMsg(t, cam) // drain START_STREAM
+	readMsg(t, cam) // drain START_STREAM (viewer connect)
 
-	ctx := context.Background()
-	viewer.Write(ctx, websocket.MessageText, []byte("CMD:SECURITY_ON:1:480p"))
-	readMsg(t, cam) // drain START_STREAM re-sent by security mode
+	// drop the viewer and the only viewer; stream stops
 	viewer.Close(websocket.StatusNormalClosure, "bye")
-	time.Sleep(50 * time.Millisecond)
+	readMsg(t, cam) // drain STOP_STREAM
 
+	// a fresh viewer comes back, turns security on (no redundant start),
+	// then off; with no viewers left the stream stops again
 	viewer2 := wsConnect(t, srv, "viewer")
-	readMsg(t, cam) // drain START_STREAM for viewer2
+	readMsg(t, cam) // drain START_STREAM (viewer2 connect)
+	ctx := context.Background()
+	viewer2.Write(ctx, websocket.MessageText, []byte("CMD:SECURITY_ON:1:480p"))
 	viewer2.Write(ctx, websocket.MessageText, []byte("CMD:SECURITY_OFF"))
-	time.Sleep(50 * time.Millisecond)
 	viewer2.Close(websocket.StatusNormalClosure, "bye")
 
+	if msg := readMsg(t, cam); msg != "CMD:STOP_STREAM" {
+		t.Errorf("got %q, want CMD:STOP_STREAM", msg)
+	}
+}
+
+func TestMotionRecIndependentOfSnapshots(t *testing.T) {
+	_, srv := newTestServer(t)
+	cam := wsConnect(t, srv, "cam")
+	viewer := wsConnect(t, srv, "viewer")
+	time.Sleep(50 * time.Millisecond)
+	readMsg(t, cam) // drain START_STREAM
+
+	// motion recording on must make the cam detect motion (detect=1) even
+	// with snapshots off (snap=0) — the two are independent.
+	viewer.Write(context.Background(), websocket.MessageText,
+		[]byte("CMD:MOTION_REC_ON:1:480p"))
+	if msg := readMsg(t, cam); msg != "CMD:MOTION:snap=0:detect=1" {
+		t.Errorf("got %q, want CMD:MOTION:snap=0:detect=1", msg)
+	}
+}
+
+func TestMotionRecStartsAndStopsStream(t *testing.T) {
+	motionIdleDuration = 100 * time.Millisecond
+	defer func() { motionIdleDuration = 10 * time.Second }()
+	_, srv := newTestServer(t)
+	cam := wsConnect(t, srv, "cam")
+	time.Sleep(50 * time.Millisecond)
+	ctx := context.Background()
+
+	// enable motion recording via a viewer, then drop the viewer so the
+	// stream is free to be driven purely by motion
+	viewer := wsConnect(t, srv, "viewer")
+	readMsg(t, cam) // drain START_STREAM (viewer connect)
+	viewer.Write(ctx, websocket.MessageText, []byte("CMD:MOTION_REC_ON:1:480p"))
+	readMsg(t, cam) // drain CMD:MOTION:snap=0:detect=1
+	viewer.Close(websocket.StatusNormalClosure, "bye")
+	readMsg(t, cam) // drain STOP_STREAM from the viewer leaving
+
+	// first motion event switches the recorder on and starts the stream
+	cam.Write(ctx, websocket.MessageText, []byte("EVENT:MOTION"))
+	if msg := readMsg(t, cam); msg != "CMD:START_STREAM:720p" {
+		t.Errorf("got %q, want CMD:START_STREAM:720p", msg)
+	}
+
+	// after the idle timeout with no further motion, motion recording stops
+	// and — with no viewer — the stream is stopped too
 	if msg := readMsg(t, cam); msg != "CMD:STOP_STREAM" {
 		t.Errorf("got %q, want CMD:STOP_STREAM", msg)
 	}
@@ -220,5 +285,22 @@ func TestStopStreamOnViewerDisconnect(t *testing.T) {
 	msg := readMsg(t, cam)
 	if msg != "CMD:STOP_STREAM" {
 		t.Errorf("got %q, want CMD:STOP_STREAM", msg)
+	}
+}
+
+func TestCamReconnectRestartsStream(t *testing.T) {
+	_, srv := newTestServer(t)
+	cam := wsConnect(t, srv, "cam")
+	_ = wsConnect(t, srv, "viewer")
+	time.Sleep(50 * time.Millisecond)
+	readMsg(t, cam) // drain START_STREAM
+
+	// cam drops and reconnects; the new cam must get a fresh START_STREAM
+	// (the stream was marked not-streaming on disconnect)
+	cam.Close(websocket.StatusNormalClosure, "bye")
+	time.Sleep(50 * time.Millisecond)
+	cam = wsConnect(t, srv, "cam")
+	if msg := readMsg(t, cam); !strings.HasPrefix(msg, "CMD:START_STREAM") {
+		t.Errorf("got %q, want CMD:START_STREAM prefix", msg)
 	}
 }

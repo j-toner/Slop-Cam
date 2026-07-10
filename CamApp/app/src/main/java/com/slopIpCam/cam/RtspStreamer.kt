@@ -6,7 +6,6 @@ import android.hardware.camera2.CameraManager
 import android.util.Log
 import com.pedro.common.ConnectChecker
 import com.pedro.encoder.input.sources.video.Camera2Source
-import com.pedro.encoder.input.video.CameraHelper
 import com.pedro.library.rtsp.RtspStream
 import com.pedro.rtsp.rtsp.Protocol
 
@@ -34,9 +33,11 @@ class RtspStreamer(
         // match the encoded frame to the phone's orientation at stream start —
         // rotation 90/270 swaps encoder dims to portrait, otherwise the GL
         // pipeline squeezes the rotated image into a landscape frame.
-        // callers pass a sensor-derived rotation because the display rotation
-        // is frozen while the screen is off/locked
-        val rot = if (rotation >= 0) rotation else CameraHelper.getCameraOrientation(context)
+        // callers pass the device's physical orientation (sensor-derived); if
+        // somehow absent, fall back to the display-derived rotation rather
+        // than the camera sensor's intrinsic orientation, which would encode
+        // a wrongly-rotated (distorted) frame when the phone isn't portrait.
+        val rot = if (rotation >= 0) rotation else displayRotation(context)
         if (!stream.prepareVideo(width, height, bitrateBps, rotation = rot)) {
             onError("prepareVideo failed")
             return
@@ -48,6 +49,14 @@ class RtspStreamer(
 
     fun stop() {
         if (stream.isStreaming) stream.stopStream()
+    }
+
+    // device physical orientation (0/90/180/270) from the display rotation;
+    // the encoder rotation for that is (physical + 90) % 360.
+    @Suppress("DEPRECATION")
+    private fun displayRotation(context: Context): Int {
+        val wm = context.getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager
+        return (wm.defaultDisplay.rotation * 90 + 90) % 360
     }
 
     /** Grab a frame from the live stream's GL pipeline. */

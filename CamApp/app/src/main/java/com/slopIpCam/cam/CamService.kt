@@ -117,6 +117,17 @@ class CamService : Service(), LifecycleOwner {
     }
 
     private fun startOrientationWatch() {
+        // Seed the orientation from the display *before* the sensor delivers
+        // its first event. OrientationEventListener only fires on change, so
+        // a phone already sitting in landscape (after a (re)start, or with
+        // the screen off) would otherwise keep the -1 "unknown" rotation —
+        // which the streamer falls back to the sensor's intrinsic orientation
+        // and encodes a wrongly-rotated, distorted frame. The display
+        // rotation is correct even with the screen off, since the device
+        // hasn't physically moved.
+        val seed = physicalDegFromDisplay()
+        devicePhysicalDeg = seed
+        deviceRotation = (seed + 90) % 360
         orientationListener = object : android.view.OrientationEventListener(this) {
             override fun onOrientationChanged(deg: Int) {
                 if (deg == ORIENTATION_UNKNOWN) return
@@ -155,9 +166,10 @@ class CamService : Service(), LifecycleOwner {
         val streamer = rtspStreamer ?: return
         val url = activeRtspUrl ?: return
         if (!shouldStream || streamer.isStreaming) return
-        appliedRotation = deviceRotation
+        appliedRotation = if (deviceRotation >= 0) deviceRotation
+        else (physicalDegFromDisplay() + 90) % 360
         streamPrevLuma = null // don't diff frames across stream sessions
-        streamer.start(url, activeWidth, activeHeight, rotation = deviceRotation)
+        streamer.start(url, activeWidth, activeHeight, rotation = appliedRotation)
         if (streamer.isStreaming) updateNotification("Streaming")
     }
 
@@ -211,10 +223,11 @@ class CamService : Service(), LifecycleOwner {
             msg == "CMD:SNAPSHOT" -> takeSnapshot()
             msg == "CMD:FLASHLIGHT_ON" -> setTorch(true)
             msg == "CMD:FLASHLIGHT_OFF" -> setTorch(false)
-            // remote motion-watch toggle from the viewer; the poll loop
-            // applies the pref within 2s, same as the local switch
-            msg == "CMD:MOTION_ON" -> setMotionWatchPref(true)
-            msg == "CMD:MOTION_OFF" -> setMotionWatchPref(false)
+            // remote motion config from the viewer (via ctrl-server):
+            // snap=1 enables motion-snapshot uploads, detect=1 enables
+            // motion detection (EVENT:MOTION). The two are independent — a
+            // motion-recording viewer sends detect=1 with snap=0.
+            msg.startsWith("CMD:MOTION:") -> handleMotionCmd(msg)
             msg == "CMD:SWITCH_LENS" -> handler.post {
                 val lens = rtspStreamer?.toggleLens()
                 if (lens != null) wsClient.sendText("EVENT:LENS:$lens")
@@ -222,9 +235,15 @@ class CamService : Service(), LifecycleOwner {
         }
     }
 
-    private fun setMotionWatchPref(on: Boolean) {
-        getSharedPreferences("runtime", MODE_PRIVATE)
-            .edit().putBoolean("motion_watch", on).apply()
+    // CMD:MOTION:snap=1:detect=0 — snapshots and detection are tracked
+    // separately so recording on motion works without forcing snapshots.
+    private fun handleMotionCmd(msg: String) {
+        val snap = msg.substringAfter("snap=", "0").substringBefore(":").toIntOrNull() ?: 0
+        val detect = msg.substringAfter("detect=", "0").substringBefore(":").toIntOrNull() ?: 0
+        getSharedPreferences("runtime", MODE_PRIVATE).edit().apply {
+            putBoolean("motion_watch", snap == 1)
+            putBoolean("motion_detect", detect == 1)
+        }.apply()
     }
 
     private fun setTorch(on: Boolean) {
@@ -238,6 +257,15 @@ class CamService : Service(), LifecycleOwner {
         }
     }
 
+    // The device's physical orientation (0/90/180/270 clockwise from natural
+    // portrait) taken from the display rotation — always available, even with
+    // the screen off, unlike OrientationEventListener change events.
+    @Suppress("DEPRECATION")
+    private fun physicalDegFromDisplay(): Int {
+        val wm = getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager
+        return wm.defaultDisplay.rotation * 90
+    }
+
     private fun resolutionDimensions(res: String) = when (res) {
         "360p" -> Pair(640, 360)
         "1080p" -> Pair(1920, 1080)
@@ -248,15 +276,18 @@ class CamService : Service(), LifecycleOwner {
         if (pollRunnable != null) return
         val r = object : Runnable {
             override fun run() {
-                val on = getSharedPreferences("runtime", MODE_PRIVATE)
-                    .getBoolean("motion_watch", false)
+                val prefs = getSharedPreferences("runtime", MODE_PRIVATE)
+                val watch = prefs.getBoolean("motion_watch", false)
+                val detect = prefs.getBoolean("motion_detect", false)
                 val streaming = rtspStreamer?.isStreaming == true
-                if (on && !streaming && cameraProvider == null) startMotionWatch()
-                else if ((!on || streaming) && cameraProvider != null && !oneShotSnapshot)
+                // detection drives motion analysis + EVENT:MOTION; snapshots
+                // (motion_watch) are saved only when the user enabled them
+                motionSnapshots = watch
+                motionWatchEnabled = watch || detect
+                val needDetect = motionWatchEnabled
+                if (needDetect && !streaming && cameraProvider == null) startMotionWatch()
+                else if ((!needDetect || streaming) && cameraProvider != null && !oneShotSnapshot)
                     stopMotionWatch() // keep camera bound while a one-shot is pending
-                // while streaming, motion analysis rides the stream's own
-                // frames (see motionFrameCb); this flag gates it
-                motionWatchEnabled = on
                 handler.postDelayed(this, 2000)
             }
         }
@@ -265,6 +296,7 @@ class CamService : Service(), LifecycleOwner {
     }
 
     @Volatile private var motionWatchEnabled = false
+    @Volatile private var motionSnapshots = false
     private var streamPrevLuma: ByteArray? = null
 
     // runs on the camera ImageReader thread
@@ -280,7 +312,9 @@ class CamService : Service(), LifecycleOwner {
         }
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val intervalMs = (prefs.getString("snapshot_interval_s", "30")?.toLongOrNull() ?: 30L) * 1000L
-        if (now - lastSnapshotMs >= intervalMs) {
+        // snapshots are only saved when the user enabled motion snapshots —
+        // detection + EVENT:MOTION still run regardless (see motionSnapshots)
+        if (motionSnapshots && now - lastSnapshotMs >= intervalMs) {
             lastSnapshotMs = now
             // GL pipeline frame is already upright
             rtspStreamer?.takePhoto { bmp -> analysisExecutor.execute { sendSnapshot(bmp) } }
@@ -330,7 +364,7 @@ class CamService : Service(), LifecycleOwner {
                             lastMotionEventMs = now
                             wsClient.sendText("EVENT:MOTION")
                         }
-                        if (now - lastSnapshotMs >= intervalMs) {
+                        if (motionSnapshots && now - lastSnapshotMs >= intervalMs) {
                             lastSnapshotMs = now
                             sendSnapshot(proxy.toBitmap(), proxy.imageInfo.rotationDegrees)
                         }
