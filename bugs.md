@@ -382,3 +382,14 @@ Also hardened while there: `loadSecurityState` now validates persisted fps/res a
 **Not yet fixed:** CAM-3, CAM-5, CC-2 (priority item 6), and the Low/Info cleanup items (GO-2 dotfile guard, CG-6..10, CC-3/4, CV-1, VIEW lows).
 
 **Deploy reminder:** fixes are inert until redeployed — `cd server && docker compose up -d --build`, then reinstall both APKs.
+
+---
+
+# Post-deploy field finding — 2026-07-11
+
+#### CC-5 — In-stream motion tap never attaches; every motion clip is a fixed ~12s · **Critical** · ✅ **FIXED**
+- **Symptom (user report):** motion recording is spotty — delayed start, then exactly ~12s of footage, then stop, even with continuous motion.
+- **Location:** `RtspStreamer.kt` `start()`/`attachMotionListener()`
+- **Root cause (source-verified + reproduced on device):** the motion-frame tap was attached *before* `prepareVideo`, but RootEncoder 2.7.2's `VideoSource.width/height` are `0` until `prepareVideo` calls `init()`. `Camera2Source.addImageListener` immediately builds an `ImageReader` from those dims → `IllegalArgumentException: The image dimensions must be positive` (captured live in logcat). The catch swallowed it and `motionListenerAttached` was set `true` anyway, so the cam was blind while streaming: no `EVENT:MOTION` ever re-armed the hub's idle window, so every motion recording ran exactly `motionIdleDuration + motionSpinupGrace` = 15s — ≈12s of footage after ~3s stream/ffmpeg spin-up. Server logs showed back-to-back windows of exactly 15s with a new one opening 1s after the last closed (motion clearly continuous). This subsumes the earlier CAM-4 hypothesis (the session-rebuild mechanism was refuted — `Camera2ApiManager` keeps the ImageReader across restarts; the listener simply never attached at all).
+- **Fix:** attach the tap after `prepareVideo` (dims valid) and before `startStream` (camera not yet running, reader joins the session cleanly); `attachMotionListener` now returns success and the flag is only set when it actually attached, so a failure retries on the next start.
+- **Expected behavior after fix:** continued motion re-arms the 10s window via in-stream detection — clips run as long as motion continues. The ~3s missing at the start of a cold-start clip is architectural (camera handoff + RTSP + ffmpeg attach); use security mode (continuous stream) if pre-roll matters.

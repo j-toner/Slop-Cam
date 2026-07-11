@@ -25,10 +25,6 @@ class RtspStreamer(
         rotation: Int = -1
     ) {
         if (stream.isStreaming) return
-        if (!motionListenerAttached && motionFrameCb != null) {
-            attachMotionListener() // once, before the camera session exists
-            motionListenerAttached = true
-        }
         stream.prepareAudio(44100, true, 128_000)
         // match the encoded frame to the phone's orientation at stream start —
         // rotation 90/270 swaps encoder dims to portrait, otherwise the GL
@@ -41,6 +37,15 @@ class RtspStreamer(
         if (!stream.prepareVideo(width, height, bitrateBps, rotation = rot)) {
             onError("prepareVideo failed")
             return
+        }
+        // attach AFTER prepareVideo: the video source's width/height are 0
+        // until prepareVideo init()s it, and Camera2 builds the tap's
+        // ImageReader from those dims immediately — attaching earlier threw
+        // "image dimensions must be positive" and killed in-stream motion
+        // detection for the whole process. The camera isn't running yet at
+        // this point, so the reader still joins the session cleanly.
+        if (!motionListenerAttached && motionFrameCb != null) {
+            motionListenerAttached = attachMotionListener()
         }
         stream.getStreamClient().setProtocol(Protocol.TCP)
         stream.startStream(rtspUrl)
@@ -122,12 +127,15 @@ class RtspStreamer(
      * Tap the stream's camera frames for motion analysis (Y plane + dims).
      * Must be attached while the camera is NOT running — RootEncoder tears
      * the whole camera session down and rebuilds it otherwise. Called from
-     * start() before prepareVideo, so it just joins the initial session.
+     * start() between prepareVideo (which sets the source dims the tap's
+     * ImageReader is created from) and startStream (which opens the camera).
+     * Returns whether the tap actually attached, so a failure is retried on
+     * the next start instead of silently disabling motion-while-streaming.
      */
-    private fun attachMotionListener() {
-        val cb = motionFrameCb ?: return
-        val source = stream.videoSource as? Camera2Source ?: return
-        try {
+    private fun attachMotionListener(): Boolean {
+        val cb = motionFrameCb ?: return false
+        val source = stream.videoSource as? Camera2Source ?: return false
+        return try {
             source.addImageListener(
                 android.graphics.ImageFormat.YUV_420_888, /* maxImages = */ 2, false,
                 object : com.pedro.encoder.input.video.Camera2ApiManager.ImageCallback {
@@ -147,8 +155,11 @@ class RtspStreamer(
                         }
                     }
                 })
+            Log.i("RtspStreamer", "motion tap attached")
+            true
         } catch (e: Exception) {
             Log.e("RtspStreamer", "addImageListener failed: ${e.message}")
+            false
         }
     }
 
