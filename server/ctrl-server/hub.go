@@ -32,6 +32,13 @@ type securityState struct {
 	MotionRec bool   `json:"motion_rec"`
 }
 
+// recorderControl is what the hub needs from the security recorder; an
+// interface so tests can observe recorder transitions with a fake.
+type recorderControl interface {
+	Start(fps, res string)
+	Stop()
+}
+
 type Hub struct {
 	mu          sync.RWMutex
 	cam         *Client
@@ -42,8 +49,8 @@ type Hub struct {
 	fromCam     chan Message
 	fromViewer  chan Message
 	snapshotDir string
-	recorder    *Recorder     // nil when recording is unavailable (tests)
-	clip        *ClipRecorder // nil in tests (manual clips, if any)
+	recorder    recorderControl // nil when recording is unavailable (tests)
+	clip        *ClipRecorder   // nil in tests (manual clips, if any)
 	stateFile   string        // "" = don't persist security state
 	security    securityState
 	// stream need-state: the cam streams while a viewer, security mode, or
@@ -57,6 +64,15 @@ type Hub struct {
 	recFps       string
 	recRes       string
 	motionTimer  *time.Timer
+	// motionGen invalidates idle timers that lost the race to a fresh
+	// motion event: time.Timer.Stop doesn't wait for a running callback,
+	// so an expiry can execute after the window was re-armed.
+	motionGen int
+	// recorder need-state, mirroring `streaming` for the stream: ffmpeg is
+	// only (re)started on a real off->on transition or a param change.
+	recRunning bool
+	recRunFps  string
+	recRunRes  string
 }
 
 type Message struct {
@@ -189,13 +205,14 @@ func (h *Hub) handleServerCmd(cmd string) {
 		h.applyMotionToCamLocked()
 	case cmd == "CMD:MOTION_REC_OFF":
 		h.motionRec = false
-		if !h.security.On {
-			h.motionActive = false
-			if h.recorder != nil {
-				h.recorder.Stop()
-			}
+		h.motionActive = false
+		h.motionGen++ // invalidate any armed idle timer
+		if h.motionTimer != nil {
+			h.motionTimer.Stop()
+			h.motionTimer = nil
 		}
 		h.applyMotionToCamLocked()
+		h.ensureRecorderLocked()
 		h.ensureStreamLocked()
 	case strings.HasPrefix(cmd, "CMD:MOTION_REC_ON:"):
 		parts := strings.Split(strings.TrimPrefix(cmd, "CMD:MOTION_REC_ON:"), ":")
@@ -207,6 +224,8 @@ func (h *Hub) handleServerCmd(cmd string) {
 		h.recFps = parts[0]
 		h.recRes = parts[1]
 		h.applyMotionToCamLocked()
+		// applies the new params to an active motion window immediately
+		h.ensureRecorderLocked()
 	case cmd == "CMD:SECURITY_OFF":
 		if !h.security.On {
 			return
@@ -214,9 +233,8 @@ func (h *Hub) handleServerCmd(cmd string) {
 		h.security.On = false
 		h.security.Fps = ""
 		h.security.Res = ""
-		if h.recorder != nil {
-			h.recorder.Stop()
-		}
+		// an active motion window keeps the recorder (and stream) alive
+		h.ensureRecorderLocked()
 		h.ensureStreamLocked()
 	case strings.HasPrefix(cmd, "CMD:SECURITY_ON:"):
 		parts := strings.Split(strings.TrimPrefix(cmd, "CMD:SECURITY_ON:"), ":")
@@ -224,14 +242,10 @@ func (h *Hub) handleServerCmd(cmd string) {
 			log.Printf("invalid security cmd: %q", cmd)
 			return
 		}
-		paramsChanged := !h.security.On ||
-			h.security.Fps != parts[0] || h.security.Res != parts[1]
 		h.security.On = true
 		h.security.Fps = parts[0]
 		h.security.Res = parts[1]
-		if paramsChanged && h.recorder != nil {
-			h.recorder.Start(parts[0], parts[1])
-		}
+		h.ensureRecorderLocked()
 		h.ensureStreamLocked()
 	default:
 		log.Printf("unknown server cmd: %q", cmd)
@@ -260,36 +274,68 @@ func (h *Hub) onMotionEvent() {
 			idle += motionSpinupGrace
 		}
 		h.motionActive = true
-		if h.recorder != nil {
-			if h.recFps == "" {
-				h.recFps = "1"
-			}
-			if h.recRes == "" {
-				h.recRes = "480p"
-			}
-			h.recorder.Start(h.recFps, h.recRes)
-		}
+		h.ensureRecorderLocked()
 	}
 	h.ensureStreamLocked()
+	// each event re-arms the window under a new generation, so an expiry
+	// that already fired (and is waiting on the mutex) becomes stale
+	h.motionGen++
+	gen := h.motionGen
 	if h.motionTimer != nil {
 		h.motionTimer.Stop()
 	}
-	h.motionTimer = time.AfterFunc(idle, h.motionExpired)
+	h.motionTimer = time.AfterFunc(idle, func() { h.motionExpired(gen) })
 }
 
-// motionExpired runs after motionIdleDuration of no motion; drop motion
-// recording (and the stream) unless manual security mode still wants it.
-func (h *Hub) motionExpired() {
+// motionExpired runs after motionIdleDuration of no motion; the motion
+// window closes, and the recorder/stream stay up only if something else
+// (security mode, viewers) still wants them.
+func (h *Hub) motionExpired(gen int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if !h.security.On {
-		h.motionActive = false
-		if h.recorder != nil {
+	if gen != h.motionGen {
+		return // a fresh motion event re-armed the window; this timer lost
+	}
+	h.motionActive = false
+	h.motionTimer = nil
+	h.ensureRecorderLocked()
+	h.ensureStreamLocked()
+}
+
+// caller holds h.mu — run the recorder exactly when security mode or an
+// active motion window needs it, mirroring ensureStreamLocked for the
+// stream: ffmpeg is only (re)started on a real off->on transition or a
+// param change, and never restarted for a state change that keeps the
+// same params (a restart SIGINTs the live segment). Security params win
+// over motion params when both apply.
+func (h *Hub) ensureRecorderLocked() {
+	if h.recorder == nil {
+		return
+	}
+	want := h.security.On || h.motionActive
+	if !want {
+		if h.recRunning {
+			h.recRunning = false
 			h.recorder.Stop()
 		}
+		return
 	}
-	h.ensureStreamLocked()
-	h.motionTimer = nil
+	fps, res := h.recFps, h.recRes
+	if h.security.On {
+		fps, res = h.security.Fps, h.security.Res
+	}
+	if fps == "" {
+		fps = "1"
+	}
+	if res == "" {
+		res = "480p"
+	}
+	if h.recRunning && fps == h.recRunFps && res == h.recRunRes {
+		return
+	}
+	h.recRunning = true
+	h.recRunFps, h.recRunRes = fps, res
+	h.recorder.Start(fps, res)
 }
 
 // caller holds h.mu — send START_STREAM exactly when the stream becomes
@@ -362,11 +408,12 @@ func (h *Hub) loadSecurityState() {
 	if json.Unmarshal(data, &s) != nil {
 		return
 	}
+	if s.On && (!allowedFps[s.Fps] || allowedRes[s.Res] == "") {
+		return // corrupted/hand-edited state; don't run ffmpeg on it
+	}
 	h.security = s
 	h.motionRec = s.MotionRec
-	if s.On && h.recorder != nil {
-		h.recorder.Start(s.Fps, s.Res)
-	}
+	h.ensureRecorderLocked()
 	log.Printf("state restored (security=%v fps=%s res=%s motionRec=%v)",
 		s.On, s.Fps, s.Res, s.MotionRec)
 }

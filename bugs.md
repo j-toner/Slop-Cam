@@ -29,7 +29,7 @@ Severity counts: **Critical 1 · High 5 · Medium 9 · Low 13** (incl. 1 documen
 
 ## Server (`server/ctrl-server`, Go)
 
-### GO-1 — Motion event restarts the security recorder unnecessarily  ·  Medium
+### GO-1 — Motion event restarts the security recorder unnecessarily  ·  Medium  ·  ✅ **FIXED**
 - **Location:** `hub.go:255-263` (`onMotionEvent`)
 - **Problem:** When `security.On` is already driving the recorder and a motion burst begins, `!h.motionActive` is true, so the hub calls `h.recorder.Start(h.recFps, h.recRes)`. That SIGINTs the live security segment and re-splits it (and may change fps/res), producing a visible gap in continuous security footage on *every* first motion event after a quiet period.
 - **Fix:** Skip `recorder.Start` when the recorder is already active and the motion params equal the current recording params; only flip `motionActive` and re-arm the idle timer.
@@ -60,7 +60,7 @@ Severity counts: **Critical 1 · High 5 · Medium 9 · Low 13** (incl. 1 documen
 - **Problem:** `tryStartStream` bails with `if (!shouldStream || streamer.isStreaming) return`, but RootEncoder's `isStreaming` only flips `true` inside the async `onConnectionSuccess` callback (network thread). Each `CMD:START_STREAM` is posted as its own `handler` runnable (`CamService.kt:206`); two arriving back-to-back both see `isStreaming==false` and call `streamer.start()` twice → `RtspStream::startStream` re-publishes RTSP and **freezes the viewer ~5s**. This is the exact load-bearing invariant the repo warns about, and the client-side guard that's supposed to protect it is broken.
 - **Fix:** Track a synchronous enum/flag `streamState` (STOPPED/STARTING/STREAMING); set STARTING *before* `streamer.start()` and clear it only in `onConnectionSuccess`/`onConnectionFailed`. Guard both `tryStartStream` and `RtspStreamer.start` on that, not on the async `isStreaming`.
 
-### CAM-2 — `onAuthError` leaves a permanent false "Streaming" state  ·  High
+### CAM-2 — `onAuthError` leaves a permanent false "Streaming" state  ·  High  ·  ✅ **FIXED**
 - **Location:** `RtspStreamer.kt:179`
 - **Problem:** `onAuthError` calls `onError(...)` (which reschedules `tryStartStream`) but does **not** `stop()`. RootEncoder keeps `isStreaming==true`, so the retry hits the `streamer.isStreaming` guard and no-ops forever — the cam is stuck dead with the UI showing "Streaming".
 - **Fix:** `override fun onAuthError() { onError("RTSP auth error"); stop() }`.
@@ -124,7 +124,7 @@ Severity counts: **Critical 1 · High 5 · Medium 9 · Low 13** (incl. 1 documen
 
 ## ViewApp (`com.slopIpCam.view`, Kotlin)
 
-### VIEW-1 — `onDestroy` disposes WebRTC objects without joining the in-flight job  ·  High
+### VIEW-1 — `onDestroy` disposes WebRTC objects without joining the in-flight job  ·  High  ·  ✅ **FIXED**
 - **Location:** `MainActivity.kt:419-431`
 - **Problem:** `webRtcJob?.cancel()` is **not** `cancelAndJoin()`; the cancelled `startWebRtc` coroutine can be mid-`createPeerConnection`/`setRemoteDescription` when `peerConnection?.dispose()` / `peerConnectionFactory?.dispose()` run → classic libwebrtc SIGSEGV/SIGABRT.
 - **Fix:** `webRtcJob?.cancelAndJoin()` before disposing `peerConnection`; dispose `peerConnectionFactory` **last**.
@@ -270,7 +270,7 @@ Each finding re-checked against source and, where the claim depends on library b
 
 ### Server — Critical
 
-#### CG-1 — Stale-cam kick strands `streaming=true`; replacement cam never told to stream · **Critical (confirmed by failing test)**
+#### CG-1 — Stale-cam kick strands `streaming=true`; replacement cam never told to stream · **Critical (confirmed by failing test)** · ✅ **FIXED**
 - **Location:** `hub.go:87-104` (register), `hub.go:109-117` (unregister)
 - **Problem:** When a new cam connection registers while the old one is still half-open (cam app crash/restart or network blip; the server's ping loop can take up to ~30s to reap the old socket), the register path kicks the stale cam (`old.cancel()`) and sets `h.cam = c` — but leaves `h.streaming = true`. The old connection's unregister then skips the reset because `h.cam == c` is false. `ensureStreamLocked` sees `want == streaming` and **never sends `CMD:START_STREAM`**. No future transition fires while viewers stay connected, so viewers sit on "Waiting for stream (retry N)…" indefinitely and security/motion recording records nothing.
 - **Evidence:** Repro test written and run (scratch copy, `stale_cam_test.go`): cam + viewer connect, START drained, a second cam connection registers before the first unregisters → new cam receives no START_STREAM within 1s. Test **fails on current code**. The existing `TestCamReconnectRestartsStream` only covers close-then-reconnect, where unregister runs first and clears the flag.
@@ -280,21 +280,21 @@ Each finding re-checked against source and, where the claim depends on library b
 
 Recorder on/off is decided ad-hoc in four places instead of derived from desired state the way `ensureStreamLocked` derives the stream. Recommended shape: one `ensureRecorderLocked()` with `wantRec = security.On || motionActive`, security params winning when both apply. That one function subsumes GO-1 and CG-2/3/4/5.
 
-#### CG-2 — `motionExpired` races a fresh motion event; recording stops despite ongoing motion · High
+#### CG-2 — `motionExpired` races a fresh motion event; recording stops despite ongoing motion · High · ✅ **FIXED**
 - **Location:** `hub.go:266-269` (`onMotionEvent` re-arm), `hub.go:274-285` (`motionExpired`)
 - **Problem:** Go-stdlib-documented hazard (`time.Timer.Stop`: *"returns false if it had already expired… For func-based timers, Stop does not wait for the function to complete"*). If `EVENT:MOTION` arrives as the idle timer fires, `Stop()` loses, the already-running `motionExpired` blocks on `h.mu`, runs **after** the re-arm, stops the recorder and clears `motionActive` — despite motion moments ago. The cam's 5s `EVENT:MOTION` throttle then delays the restart: split clip with a gap.
 - **Fix:** Generation counter incremented on every re-arm; `motionExpired` no-ops if its generation is stale (the Go docs' "coordinate with f explicitly"). Or compare a `lastMotionAt` timestamp under the lock.
 
-#### CG-3 — `motionExpired` leaves `motionActive=true` when security mode is on; later `SECURITY_OFF` strands the stream · Medium
+#### CG-3 — `motionExpired` leaves `motionActive=true` when security mode is on; later `SECURITY_OFF` strands the stream · Medium · ✅ **FIXED**
 - **Location:** `hub.go:277-281`, `hub.go:202-212`
 - **Problem:** `motionExpired` only clears `motionActive` when `!security.On`. Sequence: motion fires while security on → timer expires → `motionActive` stays true → `CMD:SECURITY_OFF` → `ensureStreamLocked` computes `want = motionActive = true` → cam streams to nobody, recorder off, until a future motion cycle happens to clear it (never, if motion rec is disabled meanwhile).
 - **Fix:** `motionExpired` always clears `motionActive`; whether the *recorder* keeps running is `security.On`'s call (falls out of `ensureRecorderLocked`).
 
-#### CG-4 — `SECURITY_OFF` kills an in-flight motion recording window · Medium
+#### CG-4 — `SECURITY_OFF` kills an in-flight motion recording window · Medium · ✅ **FIXED**
 - **Location:** `hub.go:202-212`
 - **Problem:** `CMD:SECURITY_OFF` calls `recorder.Stop()` unconditionally. If `motionRec` is on and `motionActive` is true (cat currently moving), turning security mode off truncates the motion clip mid-window.
 
-#### CG-5 — `MOTION_REC_ON` param change ignored while motion is active · Low
+#### CG-5 — `MOTION_REC_ON` param change ignored while motion is active · Low · ✅ **FIXED**
 - **Location:** `hub.go:192-201`
 - **Problem:** Updates `recFps`/`recRes` but never restarts the recorder, so new params silently apply only from the next motion cycle.
 
@@ -318,7 +318,7 @@ Recorder on/off is decided ad-hoc in four places instead of derived from desired
 
 ### CamApp
 
-#### CC-1 — Stream-retry vs motion-watch camera contention (livelock) · High
+#### CC-1 — Stream-retry vs motion-watch camera contention (livelock) · High · ✅ **FIXED**
 - **Location:** `CamService.kt:97-99` (retry path), `CamService.kt:275-296` (poll loop), `CamService.kt:165-174` (`tryStartStream`)
 - **Problem:** The START_STREAM command path calls `stopMotionWatch()` before starting; the **error-retry path does not** (`onError` → `postDelayed({ tryStartStream() }, 5000)`). Meanwhile the 2s poll loop re-binds CameraX whenever `!isStreaming && detect on`. One failed stream start with motion detection enabled → CameraX grabs the camera → the retry opens it via Camera2. Per Camera2 docs, the second open either fails `CAMERA_IN_USE` or force-disconnects the current client (`CAMERA_DISCONNECTED`, "the camera service has shut down the connection due to a higher-priority access request"), and disconnected clients are told to retry on `onCameraAccessPrioritiesChanged` — so the two stacks can evict each other in a loop and the stream may never come back without operator intervention.
 - **Fix:** `tryStartStream()` calls `stopMotionWatch()` first (it already runs on the main handler), and/or the poll loop refuses to bind while `shouldStream` is true.
@@ -344,11 +344,11 @@ Recorder on/off is decided ad-hoc in four places instead of derived from desired
 
 ## Combined remediation priority
 
-1. **CG-1** — server: reset `streaming` on cam register (one line + the repro test). Biggest real-world outage mode.
-2. **CAM-2** — cam: `stop()` in `onAuthError` (one line). Unsticks the wrong-password dead end.
-3. **CC-1** — cam: unbind motion watch in `tryStartStream`. Prevents camera livelock.
-4. **VIEW-1** — viewer: `cancelAndJoin` + factory-last in `onDestroy`. Native-crash stopper.
-5. **GO-1 + CG-2/3/4/5** — hub: one `ensureRecorderLocked()` desired-state function + generation counter for the idle timer. Fixes five bugs in one refactor; add regression tests alongside the existing stream-invariant ones.
+1. ✅ **CG-1** — server: reset `streaming` on cam register (one line + the repro test). Biggest real-world outage mode.
+2. ✅ **CAM-2** — cam: `stop()` in `onAuthError` (one line). Unsticks the wrong-password dead end.
+3. ✅ **CC-1** — cam: unbind motion watch in `tryStartStream`. Prevents camera livelock.
+4. ✅ **VIEW-1** — viewer: `cancelAndJoin` + factory-last in `onDestroy`. Native-crash stopper.
+5. ✅ **GO-1 + CG-2/3/4/5** — hub: one `ensureRecorderLocked()` desired-state function + generation counter for the idle timer. Fixes five bugs in one refactor; add regression tests alongside the existing stream-invariant ones.
 6. **CAM-3, CAM-5, CC-2** — teardown guards and PTT off the reader thread.
 7. Low/Info items (GO-2 dotfile guard, CG-6..10, CC-3/4, CV-1, confirmed VIEW lows) as cleanup.
 
@@ -358,3 +358,27 @@ Recorder on/off is decided ad-hoc in four places instead of derived from desired
 - `go test ./...` passes on current `main`; the CG-1 repro test fails (bug present), run in a scratch copy so the working tree stayed untouched.
 - Library claims checked against: RootEncoder 2.7.2 `StreamBase.kt` (tag source), libwebrtc `VideoTrack.java` (upstream), OkHttp 5.x WebSocket docs, Go 1.25 `time` docs, Camera2 `CameraManager`/`CameraAccessException` docs, coder/websocket `Accept` docs, mediamtx auth docs.
 - Secret hygiene: `server/mediamtx.yml` and `server/.env` gitignored **and** confirmed absent from all git history (pre-gitignore revisions of `mediamtx.yml` contained no credentials).
+
+---
+
+# Fix Status — 2026-07-11
+
+| Bug | Status | Fix | Regression test |
+|-----|--------|-----|-----------------|
+| CG-1 (Critical) | ✅ Fixed | `hub.go`: cam register clears `streaming` so `ensureStreamLocked` re-sends START_STREAM to a replacement cam | `TestStaleCamKickStillGetsStartStream` |
+| GO-1 (Medium) | ✅ Fixed | `hub.go`: recorder on/off/params now derived by one `ensureRecorderLocked()` (mirrors `ensureStreamLocked`); no restart when params unchanged | `TestMotionWhileSecurityOnDoesNotRestartRecorder` |
+| CG-2 (High) | ✅ Fixed | `hub.go`: `motionGen` generation counter; a stale idle-timer expiry that lost the race to fresh motion is ignored | `TestStaleMotionExpiryIgnored` |
+| CG-3 (Medium) | ✅ Fixed | `hub.go`: `motionExpired` always clears `motionActive`; stream/recorder need-state re-derived | `TestSecurityOffAfterMotionExpiryStopsStream` |
+| CG-4 (Medium) | ✅ Fixed | `hub.go`: `SECURITY_OFF` defers to `ensureRecorderLocked`, which keeps recording through an active motion window | `TestSecurityOffKeepsActiveMotionRecording` |
+| CG-5 (Low) | ✅ Fixed | `hub.go`: `MOTION_REC_ON` re-derives recorder params immediately | `TestMotionRecParamChangeAppliesWhileActive` |
+| CAM-2 (High) | ✅ Fixed | `RtspStreamer.kt`: `onAuthError` now calls `stop()`, clearing the synchronously-set `isStreaming` so retries work | — (not unit-testable without a device; verified by build) |
+| CC-1 (High) | ✅ Fixed | `CamService.kt`: `tryStartStream` unbinds motion watch before starting, covering the error-retry and rotation-restart paths | — (device-level; verified by build) |
+| VIEW-1 (High) | ✅ Fixed | `MainActivity.kt`: `onDestroy` does `runBlocking { webRtcJob?.cancelAndJoin() }` and cancels the scope before disposing native WebRTC objects | — (device-level; verified by build) |
+
+Also hardened while there: `loadSecurityState` now validates persisted fps/res against the whitelist before acting on a corrupted/hand-edited `.security.json`.
+
+**Verification:** `go test ./...` green (includes the 6 new regression tests plus all pre-existing stream-invariant tests); `CamApp` and `ViewApp` `assembleDebug` + `testDebugUnitTest` green.
+
+**Not yet fixed:** CAM-3, CAM-5, CC-2 (priority item 6), and the Low/Info cleanup items (GO-2 dotfile guard, CG-6..10, CC-3/4, CV-1, VIEW lows).
+
+**Deploy reminder:** fixes are inert until redeployed — `cd server && docker compose up -d --build`, then reinstall both APKs.

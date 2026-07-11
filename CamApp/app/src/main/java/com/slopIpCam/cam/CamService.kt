@@ -166,6 +166,10 @@ class CamService : Service(), LifecycleOwner {
         val streamer = rtspStreamer ?: return
         val url = activeRtspUrl ?: return
         if (!shouldStream || streamer.isStreaming) return
+        // the poll loop may have re-bound motion watch while the stream was
+        // down (error retry, rotation restart) — the camera must be free or
+        // the two stacks evict each other in a loop
+        stopMotionWatch()
         appliedRotation = if (deviceRotation >= 0) deviceRotation
         else (physicalDegFromDisplay() + 90) % 360
         streamPrevLuma = null // don't diff frames across stream sessions

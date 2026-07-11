@@ -419,14 +419,18 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         wsClient?.disconnect()
         pttRecorder.stop()
-        webRtcJob?.cancel()
+        // join, not just cancel: startWebRtc may still be touching the
+        // PeerConnection on IO — disposing native objects under it is a
+        // libwebrtc SIGSEGV. The join is fast (the coroutine only suspends
+        // at cancellable points).
+        runBlocking { webRtcJob?.cancelAndJoin() }
+        scope.cancel()
         peerConnection?.dispose()
         peerConnection = null
         peerConnectionFactory?.dispose()
         peerConnectionFactory = null
         renderer.release()
         eglBase.release()
-        scope.cancel()
         super.onDestroy()
     }
 }

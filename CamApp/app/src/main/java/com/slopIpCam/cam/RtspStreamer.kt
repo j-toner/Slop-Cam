@@ -176,6 +176,9 @@ class RtspStreamer(
         // otherwise a later start() no-ops forever on a dead session
         stop()
     }
-    override fun onAuthError() { onError("RTSP auth error") }
+    // stop() matters: startStream set isStreaming synchronously and an auth
+    // failure doesn't clear it — without the reset every retry no-ops on the
+    // isStreaming guard and the cam is stuck showing "Streaming" while dead
+    override fun onAuthError() { onError("RTSP auth error"); stop() }
     override fun onAuthSuccess() {}
 }
