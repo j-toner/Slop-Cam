@@ -348,3 +348,22 @@ func TestCamReconnectRestartsStream(t *testing.T) {
 		t.Errorf("got %q, want CMD:START_STREAM prefix", msg)
 	}
 }
+
+func TestStaleCamKickStillGetsStartStream(t *testing.T) {
+	_, srv := newTestServer(t)
+	oldCam := wsConnect(t, srv, "cam")
+	_ = wsConnect(t, srv, "viewer")
+	time.Sleep(50 * time.Millisecond)
+	readMsg(t, oldCam) // drain START_STREAM sent to the old cam
+
+	// the cam app restarts and reconnects while its old connection is
+	// still half-open: the hub kicks the stale cam, and the replacement
+	// must still be told to stream — the register path used to leave
+	// streaming=true, so the fresh cam never got a START_STREAM
+	newCam := wsConnect(t, srv, "cam")
+	time.Sleep(100 * time.Millisecond)
+
+	if msg := readMsg(t, newCam); !strings.HasPrefix(msg, "CMD:START_STREAM") {
+		t.Errorf("got %q, want CMD:START_STREAM prefix", msg)
+	}
+}

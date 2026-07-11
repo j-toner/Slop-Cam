@@ -91,6 +91,14 @@ func (h *Hub) run() {
 					old.cancel() // kick stale cam connection
 				}
 				h.cam = c
+				// a new connection may be a restarted cam that isn't
+				// publishing, even when the stale connection it replaces
+				// was: clear the flag so ensureStreamLocked re-sends
+				// START_STREAM if the stream is wanted. A cam that kept
+				// publishing across the reconnect ignores the redundant
+				// START (tryStartStream guards on isStreaming), so this
+				// cannot restart a live publish.
+				h.streaming = false
 				log.Println("cam registered")
 				h.applyMotionToCamLocked()
 				h.ensureStreamLocked()
