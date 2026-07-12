@@ -27,7 +27,22 @@ class PttPlayer {
 
     init { track.play() }
 
-    fun write(pcm: ByteArray) { track.write(pcm, 0, pcm.size) }
+    // writes arrive on OkHttp's WS reader thread and can race release() at
+    // service teardown — a write on a released AudioTrack throws
+    @Volatile private var released = false
 
-    fun release() { track.stop(); track.release() }
+    fun write(pcm: ByteArray) {
+        if (released) return
+        try {
+            track.write(pcm, 0, pcm.size)
+        } catch (e: IllegalStateException) {
+            // released between the flag check and the write; drop the chunk
+        }
+    }
+
+    fun release() {
+        released = true
+        track.stop()
+        track.release()
+    }
 }

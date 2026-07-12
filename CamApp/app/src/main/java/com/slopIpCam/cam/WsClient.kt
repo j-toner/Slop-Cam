@@ -66,6 +66,7 @@ class WsClient(
 
     fun disconnect() {
         reconnectJob?.cancel()
+        scope.cancel() // this client never reconnects again; drop its scope
         ws?.close(1000, "disconnect")
         ws = null
     }

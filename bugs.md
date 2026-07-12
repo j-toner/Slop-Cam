@@ -65,7 +65,7 @@ Severity counts: **Critical 1 · High 5 · Medium 9 · Low 13** (incl. 1 documen
 - **Problem:** `onAuthError` calls `onError(...)` (which reschedules `tryStartStream`) but does **not** `stop()`. RootEncoder keeps `isStreaming==true`, so the retry hits the `streamer.isStreaming` guard and no-ops forever — the cam is stuck dead with the UI showing "Streaming".
 - **Fix:** `override fun onAuthError() { onError("RTSP auth error"); stop() }`.
 
-### CAM-3 — `onDestroy` races with late/inflight WS callbacks  ·  High
+### CAM-3 — `onDestroy` races with late/inflight WS callbacks  ·  High  ·  ✅ **FIXED**
 - **Location:** `CamService.kt:430-447` (`onDestroy`), `WsClient.kt:21,67`
 - **Problem:** `wsClient.disconnect()` cancels the reconnect job but does not stop in-flight `WebSocketListener` callbacks (they run on OkHttp threads). A late `onBinary` → `pttPlayer.write()` can fire *after* `pttPlayer.release()` → `IllegalStateException` on a released `AudioTrack`. A late `onText` can `handler.post` a command after the service is destroyed, touching `rtspStreamer`/`wsClient`.
 - **Fix:** Set a `destroyed`/`shutdown` flag checked at the top of every WS callback and `handleCommand`; release the player *before* disconnecting the socket; guard `onBinary` against a released player. Also `scope.cancel()` in `WsClient.disconnect()`.
@@ -75,7 +75,7 @@ Severity counts: **Critical 1 · High 5 · Medium 9 · Low 13** (incl. 1 documen
 - **Problem:** `motionListenerAttached` is set `true` once and never cleared in `stop()`. After a rotation restart (`stop()`→`start()`), RootEncoder rebuilds the camera session but the `ImageListener` is never re-added, so `motionFrameCb` stops firing and in-stream motion detection dies after any rotation.
 - **Fix:** Clear `motionListenerAttached` in `stop()` (or re-attach defensively on each `start()`).
 
-### CAM-5 — Async `ProcessCameraProvider` bind can hit a destroyed lifecycle / double-bind  ·  Medium
+### CAM-5 — Async `ProcessCameraProvider` bind can hit a destroyed lifecycle / double-bind  ·  Medium  ·  ✅ **FIXED**
 - **Location:** `CamService.kt:275-296` (`startMotionWatchPolling`), `324-383` (`startMotionWatch`)
 - **Problem:** The motion-watch `addListener` future can fire *after* `onDestroy` and `bindToLifecycle` a destroyed lifecycle (CameraX throws). The poll loop can double-start a bind because `cameraProvider` stays null while the future is in flight. The future guard checks only `streamer.isStreaming` (false during async startup), so it can grab the back camera the stream is opening.
 - **Fix:** Guard the future with a `destroyed` flag / `lifecycle.currentState.isAtLeast(STARTED)`; add a `motionWatchStarting` boolean cleared in the listener; also bail if `shouldStream` is set (set synchronously before `tryStartStream`).
@@ -374,12 +374,14 @@ Recorder on/off is decided ad-hoc in four places instead of derived from desired
 | CAM-2 (High) | ✅ Fixed | `RtspStreamer.kt`: `onAuthError` now calls `stop()`, clearing the synchronously-set `isStreaming` so retries work | — (not unit-testable without a device; verified by build) |
 | CC-1 (High) | ✅ Fixed | `CamService.kt`: `tryStartStream` unbinds motion watch before starting, covering the error-retry and rotation-restart paths | — (device-level; verified by build) |
 | VIEW-1 (High) | ✅ Fixed | `MainActivity.kt`: `onDestroy` does `runBlocking { webRtcJob?.cancelAndJoin() }` and cancels the scope before disposing native WebRTC objects | — (device-level; verified by build) |
+| CAM-3 (Medium) | ✅ Fixed | `CamService.kt`: volatile `destroyed` flag set first in `onDestroy` gates every WS callback; `PttPlayer.write` is release-safe (flag + catch); `WsClient.disconnect` cancels its scope | — (device-level; verified by build) |
+| CAM-5 (Medium) | ✅ Fixed | `CamService.kt`: provider-future listener bails on `destroyed` and on `shouldStream` (not just `isStreaming`); `motionWatchStarting` debounces the 2s poll loop; `bindToLifecycle` wrapped in try/catch with cleanup | — (device-level; verified by build) |
 
 Also hardened while there: `loadSecurityState` now validates persisted fps/res against the whitelist before acting on a corrupted/hand-edited `.security.json`.
 
 **Verification:** `go test ./...` green (includes the 6 new regression tests plus all pre-existing stream-invariant tests); `CamApp` and `ViewApp` `assembleDebug` + `testDebugUnitTest` green.
 
-**Not yet fixed:** CAM-3, CAM-5, CC-2 (priority item 6), and the Low/Info cleanup items (GO-2 dotfile guard, CG-6..10, CC-3/4, CV-1, VIEW lows).
+**Not yet fixed:** CC-2 (PTT off the WS reader thread), and the Low/Info cleanup items (GO-2 dotfile guard, CG-6..10, CC-3/4, CV-1, VIEW lows). CAM-3 and CAM-5 were fixed in a follow-up pass (see table).
 
 **Deploy reminder:** fixes are inert until redeployed — `cd server && docker compose up -d --build`, then reinstall both APKs.
 

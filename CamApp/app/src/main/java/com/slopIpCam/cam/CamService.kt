@@ -52,6 +52,12 @@ class CamService : Service(), LifecycleOwner {
     // last command wins: true after START_STREAM, false after STOP_STREAM —
     // error/retry paths only restart the stream while this is set
     @Volatile private var shouldStream = false
+    // WS callbacks arrive on OkHttp threads and can land after onDestroy has
+    // torn everything down (released player, stopped streamer) — gate them
+    @Volatile private var destroyed = false
+    // a ProcessCameraProvider future is in flight; stops the 2s poll loop
+    // from queueing a second bind while the first hasn't resolved yet
+    private var motionWatchStarting = false
 
     companion object {
         const val CHANNEL_ID = "slopIpCam"
@@ -105,10 +111,10 @@ class CamService : Service(), LifecycleOwner {
 
         wsClient = WsClient(
             url = wsUrl,
-            onText = { msg -> handleCommand(msg, rtspUrl) },
-            onBinary = { pcm -> pttPlayer.write(pcm) },
-            onConnected = { updateNotification(if (rtspStreamer?.isStreaming == true) "Streaming" else "Idle") },
-            onDisconnected = { updateNotification("Reconnecting...") }
+            onText = { msg -> if (!destroyed) handleCommand(msg, rtspUrl) },
+            onBinary = { pcm -> if (!destroyed) pttPlayer.write(pcm) },
+            onConnected = { if (!destroyed) updateNotification(if (rtspStreamer?.isStreaming == true) "Streaming" else "Idle") },
+            onDisconnected = { if (!destroyed) updateNotification("Reconnecting...") }
         )
         wsClient.connect()
         startMotionWatchPolling()
@@ -326,15 +332,24 @@ class CamService : Service(), LifecycleOwner {
     }
 
     private fun startMotionWatch() {
+        if (motionWatchStarting) return // a provider future is already in flight
+        motionWatchStarting = true
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val intervalMs = (prefs.getString("snapshot_interval_s", "30")?.toLongOrNull() ?: 30L) * 1000L
 
         val providerFuture = ProcessCameraProvider.getInstance(this)
         providerFuture.addListener({
+            motionWatchStarting = false
+            // the future can resolve after onDestroy — binding a DESTROYED
+            // lifecycle throws and would crash the (already gone) service
+            if (destroyed) return@addListener
             val streamer = rtspStreamer
-            if (streamer?.isStreaming == true) { // lost the race to a stream start
-                if (oneShotSnapshot) { // redirect a pending one-shot to the stream
-                    oneShotSnapshot = false
+            // lost the race to a stream start: shouldStream is set before the
+            // publish comes up, so check it too or this bind grabs the camera
+            // out from under the starting stream
+            if (streamer?.isStreaming == true || shouldStream) {
+                if (oneShotSnapshot && streamer?.isStreaming == true) {
+                    oneShotSnapshot = false // redirect a pending one-shot to the stream
                     streamer.takePhoto { bmp -> analysisExecutor.execute { sendSnapshot(bmp) } }
                 }
                 return@addListener
@@ -378,11 +393,16 @@ class CamService : Service(), LifecycleOwner {
                     proxy.close()
                 }
             }
-            cameraProvider?.bindToLifecycle(
-                this,
-                CameraSelector.DEFAULT_BACK_CAMERA,
-                analysis
-            )
+            try {
+                cameraProvider?.bindToLifecycle(
+                    this,
+                    CameraSelector.DEFAULT_BACK_CAMERA,
+                    analysis
+                )
+            } catch (e: Exception) {
+                Log.e("CamService", "motion watch bind failed: ${e.message}")
+                stopMotionWatch() // poll loop retries while detection is wanted
+            }
         }, ContextCompat.getMainExecutor(this))
     }
 
@@ -432,6 +452,7 @@ class CamService : Service(), LifecycleOwner {
     }
 
     override fun onDestroy() {
+        destroyed = true // gate any WS callback still in flight on OkHttp threads
         running = false
         getSharedPreferences("runtime", MODE_PRIVATE)
             .edit().putString(KEY_STATUS, "Off").apply()
