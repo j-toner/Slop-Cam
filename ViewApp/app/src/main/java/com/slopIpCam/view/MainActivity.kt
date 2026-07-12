@@ -30,10 +30,13 @@ class MainActivity : AppCompatActivity() {
     private var activeMediamtxBase: String? = null
     private lateinit var pttRecorder: PttRecorder
     private var peerConnectionFactory: PeerConnectionFactory? = null
-    private var peerConnection: PeerConnection? = null
-    private var webRtcJob: Job? = null
+    // written from the IO-dispatched startWebRtc coroutine, read on Main —
+    // volatile so the Main-thread state checks don't see stale references
+    @Volatile private var peerConnection: PeerConnection? = null
+    @Volatile private var webRtcJob: Job? = null
     private lateinit var eglBase: EglBase
     private lateinit var renderer: SurfaceViewRenderer
+    private var recAnimator: ObjectAnimator? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -87,15 +90,21 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnRecord).setOnClickListener {
             val prefs = PreferenceManager.getDefaultSharedPreferences(this)
             val on = !prefs.getBoolean("security_mode", false)
-            prefs.edit().putBoolean("security_mode", on).apply()
-            if (on) {
+            // send first: flipping the pref on a dropped send would show a
+            // REC indicator for a recording the server never started
+            val sent = if (on) {
                 val fps = prefs.getString("record_fps", "1")
                 val res = prefs.getString("record_resolution", "480p")
-                wsClient?.sendText("CMD:SECURITY_ON:$fps:$res")
+                wsClient?.sendText("CMD:SECURITY_ON:$fps:$res") == true
             } else {
-                wsClient?.sendText("CMD:SECURITY_OFF")
+                wsClient?.sendText("CMD:SECURITY_OFF") == true
             }
-            updateRecIndicator()
+            if (sent) {
+                prefs.edit().putBoolean("security_mode", on).apply()
+                updateRecIndicator()
+            } else {
+                Toast.makeText(this, "Not connected — try again", Toast.LENGTH_SHORT).show()
+            }
         }
 
         findViewById<Button>(R.id.btnLens).setOnClickListener {
@@ -111,7 +120,7 @@ class MainActivity : AppCompatActivity() {
 
         // glowing pulse on the REC dot; the chip is only visible while
         // security recording is enabled (see updateRecIndicator)
-        ObjectAnimator.ofFloat(findViewById<View>(R.id.recDot), View.ALPHA, 1f, 0.25f).apply {
+        recAnimator = ObjectAnimator.ofFloat(findViewById<View>(R.id.recDot), View.ALPHA, 1f, 0.25f).apply {
             duration = 800
             repeatMode = ValueAnimator.REVERSE
             repeatCount = ValueAnimator.INFINITE
@@ -348,7 +357,8 @@ class MainActivity : AppCompatActivity() {
             override fun onCreateFailure(e: String?) {}
             override fun onSetFailure(e: String?) {
                 android.util.Log.e("MainActivity", "setRemote failed: $e")
-                setStatus("Stream failed")
+                setStatus("Stream failed, retrying...")
+                restartStream() // dead-ending here required an app restart
             }
         }, SessionDescription(SessionDescription.Type.ANSWER, answerSdp))
     }
@@ -417,6 +427,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        recAnimator?.cancel() // INFINITE animator keeps Choreographer ticking
         wsClient?.disconnect()
         pttRecorder.stop()
         // join, not just cancel: startWebRtc may still be touching the

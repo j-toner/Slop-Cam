@@ -33,7 +33,8 @@ class CamService : Service(), LifecycleOwner {
     private lateinit var analysisExecutor: ExecutorService
 
     private var cameraProvider: ProcessCameraProvider? = null
-    private var lastSnapshotMs = 0L
+    // shared by the CameraX analyzer thread and the stream's ImageReader thread
+    @Volatile private var lastSnapshotMs = 0L
     @Volatile private var oneShotSnapshot = false
 
     // rotation follow: sensor-derived encoder rotation (-1 = no reading yet),
@@ -44,7 +45,7 @@ class CamService : Service(), LifecycleOwner {
     // physical clockwise angle of the device (0/90/180/270) from the
     // orientation sensor — display rotation is frozen for a service
     @Volatile private var devicePhysicalDeg = 0
-    private var lastMotionEventMs = 0L
+    @Volatile private var lastMotionEventMs = 0L
     private var activeRtspUrl: String? = null
     private var activeWidth = 1280
     private var activeHeight = 720
@@ -67,11 +68,8 @@ class CamService : Service(), LifecycleOwner {
         // while nothing is running — this flag is the live truth for the UI
         @Volatile var running = false
             private set
-        const val EXTRA_TAKE_SNAPSHOT = "take_snapshot"
         fun start(ctx: Context) = ctx.startForegroundService(Intent(ctx, CamService::class.java))
         fun stop(ctx: Context) = ctx.stopService(Intent(ctx, CamService::class.java))
-        fun snapshot(ctx: Context) = ctx.startService(
-            Intent(ctx, CamService::class.java).putExtra(EXTRA_TAKE_SNAPSHOT, true))
     }
 
     override fun onCreate() {
@@ -84,22 +82,8 @@ class CamService : Service(), LifecycleOwner {
         handler = Handler(mainLooper)
         analysisExecutor = Executors.newSingleThreadExecutor()
 
-        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        val wsUrl = (prefs.getString("ctrl_server_url", "ws://100.x.x.x:8080/ws") ?: "ws://100.x.x.x:8080/ws") + "?role=cam"
-        val mediamtxHost = prefs.getString("mediamtx_host", "100.x.x.x") ?: "100.x.x.x"
-        val rtspUser = prefs.getString("rtsp_user", "slopcam") ?: "slopcam"
-        val rtspPass = prefs.getString("rtsp_pass", "") ?: ""
-        // no baked-in default: publish auth fails closed until the user sets
-        // the password (matching mediamtx.yml authInternalUsers) in Settings
-        val rtspUrl = if (rtspUser.isNotEmpty() && rtspPass.isNotEmpty()) {
-            "rtsp://${URLEncoder.encode(rtspUser, "UTF-8")}:${URLEncoder.encode(rtspPass, "UTF-8")}@$mediamtxHost:8554/cam"
-        } else null
-
         flashlight = FlashlightManager(this)
         pttPlayer = PttPlayer()
-        motionDetector = MotionDetector(
-            sensitivity = prefs.getInt("motion_sensitivity", 30)
-        )
         rtspStreamer = RtspStreamer(this) { err ->
             updateNotification("Stream error: $err")
             handler.postDelayed({ tryStartStream() }, 5000)
@@ -109,17 +93,57 @@ class CamService : Service(), LifecycleOwner {
             }
         }
 
+        connectControl()
+        // settings changes take effect without a manual service restart:
+        // reconnect the control plane with the new URL/credentials
+        PreferenceManager.getDefaultSharedPreferences(this)
+            .registerOnSharedPreferenceChangeListener(prefListener)
+        startMotionWatchPolling()
+        startOrientationWatch()
+        updateNotification("Connecting...")
+    }
+
+    // strong reference: SharedPreferences holds listeners weakly
+    private val prefListener =
+        android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key in setOf("ctrl_server_url", "mediamtx_host", "rtsp_user",
+                    "rtsp_pass", "motion_sensitivity")
+            ) handler.post { if (!destroyed) reconnectControl() }
+        }
+
+    // publish URL for the current settings; null until a password is set
+    @Volatile private var publishUrl: String? = null
+
+    // (re)reads connection settings and (re)opens the control WebSocket —
+    // called at startup and again whenever a connection pref changes
+    private fun connectControl() {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val wsUrl = (prefs.getString("ctrl_server_url", "ws://100.x.x.x:8080/ws") ?: "ws://100.x.x.x:8080/ws") + "?role=cam"
+        val mediamtxHost = prefs.getString("mediamtx_host", "100.x.x.x") ?: "100.x.x.x"
+        val rtspUser = prefs.getString("rtsp_user", "slopcam") ?: "slopcam"
+        val rtspPass = prefs.getString("rtsp_pass", "") ?: ""
+        // no baked-in default: publish auth fails closed until the user sets
+        // the password (matching mediamtx.yml authInternalUsers) in Settings
+        publishUrl = if (rtspUser.isNotEmpty() && rtspPass.isNotEmpty()) {
+            "rtsp://${URLEncoder.encode(rtspUser, "UTF-8")}:${URLEncoder.encode(rtspPass, "UTF-8")}@$mediamtxHost:8554/cam"
+        } else null
+        motionDetector = MotionDetector(
+            sensitivity = prefs.getInt("motion_sensitivity", 30)
+        )
         wsClient = WsClient(
             url = wsUrl,
-            onText = { msg -> if (!destroyed) handleCommand(msg, rtspUrl) },
+            onText = { msg -> if (!destroyed) handleCommand(msg) },
             onBinary = { pcm -> if (!destroyed) pttPlayer.write(pcm) },
             onConnected = { if (!destroyed) updateNotification(if (rtspStreamer?.isStreaming == true) "Streaming" else "Idle") },
             onDisconnected = { if (!destroyed) updateNotification("Reconnecting...") }
         )
         wsClient.connect()
-        startMotionWatchPolling()
-        startOrientationWatch()
-        updateNotification("Connecting...")
+    }
+
+    private fun reconnectControl() {
+        wsClient.disconnect()
+        updateNotification("Settings changed, reconnecting...")
+        connectControl()
     }
 
     private fun startOrientationWatch() {
@@ -183,10 +207,7 @@ class CamService : Service(), LifecycleOwner {
         if (streamer.isStreaming) updateNotification("Streaming")
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.getBooleanExtra(EXTRA_TAKE_SNAPSHOT, false) == true) takeSnapshot()
-        return START_STICKY
-    }
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
     // posted to the main handler so it serializes after a pending
     // START_STREAM — otherwise isStreaming reads stale mid-startup
@@ -203,9 +224,10 @@ class CamService : Service(), LifecycleOwner {
         }
     }
 
-    private fun handleCommand(msg: String, rtspUrl: String?) {
+    private fun handleCommand(msg: String) {
         when {
             msg.startsWith("CMD:START_STREAM") -> {
+                val rtspUrl = publishUrl
                 if (rtspUrl == null) {
                     updateNotification("Set RTSP password in Settings")
                     return
@@ -259,9 +281,10 @@ class CamService : Service(), LifecycleOwner {
     private fun setTorch(on: Boolean) {
         val streamer = rtspStreamer
         // while streaming, the camera device is owned by RootEncoder —
-        // CameraManager.setTorchMode would throw, use the stream's lantern
+        // CameraManager.setTorchMode targets the same busy camera and would
+        // just throw, so there is no fallback from a failed lantern call
         if (streamer != null && streamer.isStreaming) {
-            if (!streamer.setTorch(on)) flashlight.setTorch(on)
+            streamer.setTorch(on)
         } else {
             flashlight.setTorch(on)
         }
@@ -307,7 +330,9 @@ class CamService : Service(), LifecycleOwner {
 
     @Volatile private var motionWatchEnabled = false
     @Volatile private var motionSnapshots = false
-    private var streamPrevLuma: ByteArray? = null
+    // written on the ImageReader thread, reset from the main thread on each
+    // stream (re)start — volatile so the reset is actually seen
+    @Volatile private var streamPrevLuma: ByteArray? = null
 
     // runs on the camera ImageReader thread
     private fun onStreamMotionFrame(luma: ByteArray, w: Int, h: Int, stride: Int) {
@@ -458,6 +483,8 @@ class CamService : Service(), LifecycleOwner {
             .edit().putString(KEY_STATUS, "Off").apply()
         shouldStream = false
         pollRunnable = null
+        PreferenceManager.getDefaultSharedPreferences(this)
+            .unregisterOnSharedPreferenceChangeListener(prefListener)
         orientationListener?.disable()
         // clears the poll loop, rotation restart, and any pending stream
         // retries — none may fire after the service is gone

@@ -17,7 +17,8 @@ class WsClient(
         .retryOnConnectionFailure(true)
         .pingInterval(15, java.util.concurrent.TimeUnit.SECONDS)
         .build()
-    private var ws: WebSocket? = null
+    // written by the reconnect coroutine, read by senders on other threads
+    @Volatile private var ws: WebSocket? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var reconnectJob: Job? = null
 
@@ -61,8 +62,15 @@ class WsClient(
         }
     }
 
-    fun sendText(msg: String) { ws?.send(msg) }
-    fun sendBinary(data: ByteArray) { ws?.send(data.toByteString()) }
+    // send() enqueues and returns false when the socket is down or its queue
+    // is full — callers that care (state toggles) can check; drops are logged
+    fun sendText(msg: String): Boolean {
+        val ok = ws?.send(msg) == true
+        if (!ok) Log.w("WsClient", "send dropped (socket not open): ${msg.take(40)}")
+        return ok
+    }
+
+    fun sendBinary(data: ByteArray): Boolean = ws?.send(data.toByteString()) == true
 
     fun disconnect() {
         reconnectJob?.cancel()

@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -534,5 +536,65 @@ func TestStaleMotionExpiryIgnored(t *testing.T) {
 	}
 	if _, stops := rec.counts(); stops != 0 {
 		t.Errorf("stale expiry stopped the recorder %d times, want 0", stops)
+	}
+}
+
+// GO-2/CG-10: dotfiles (.security.json) and directory indexes must not be
+// readable or deletable through the file server — only real media files.
+func TestFilesWithDeleteHidesDotfilesAndIndexes(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".security.json"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cam_x.mp4"), []byte("vid"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.StripPrefix("/recordings/", filesWithDelete(dir)))
+	t.Cleanup(srv.Close)
+
+	for _, tc := range []struct {
+		method, path string
+		want         int
+	}{
+		{"GET", "/recordings/.security.json", http.StatusNotFound},
+		{"DELETE", "/recordings/.security.json", http.StatusNotFound},
+		{"GET", "/recordings/", http.StatusNotFound}, // no directory index
+		{"GET", "/recordings/cam_x.mp4", http.StatusOK},
+		{"DELETE", "/recordings/cam_x.mp4", http.StatusNoContent},
+	} {
+		req, _ := http.NewRequest(tc.method, srv.URL+tc.path, nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", tc.method, tc.path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != tc.want {
+			t.Errorf("%s %s = %d, want %d", tc.method, tc.path, resp.StatusCode, tc.want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".security.json")); err != nil {
+		t.Error("DELETE removed .security.json despite 404")
+	}
+}
+
+// CG-7: two snapshots in the same millisecond must not overwrite each other.
+func TestSaveSnapshotNoSameMillisecondOverwrite(t *testing.T) {
+	h := newHub(t.TempDir())
+	paths := map[string]bool{}
+	deadline := time.Now().Add(2 * time.Second)
+	n := 0
+	for time.Now().Before(deadline) && n < 50 {
+		p, err := h.saveSnapshot([]byte("jpg"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if paths[p] {
+			t.Fatalf("saveSnapshot reused path %s (overwrite)", p)
+		}
+		paths[p] = true
+		n++
+	}
+	if len(paths) != n {
+		t.Errorf("%d snapshots produced %d files", n, len(paths))
 	}
 }

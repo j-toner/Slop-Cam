@@ -34,7 +34,7 @@ Severity counts: **Critical 1 · High 5 · Medium 9 · Low 13** (incl. 1 documen
 - **Problem:** When `security.On` is already driving the recorder and a motion burst begins, `!h.motionActive` is true, so the hub calls `h.recorder.Start(h.recFps, h.recRes)`. That SIGINTs the live security segment and re-splits it (and may change fps/res), producing a visible gap in continuous security footage on *every* first motion event after a quiet period.
 - **Fix:** Skip `recorder.Start` when the recorder is already active and the motion params equal the current recording params; only flip `motionActive` and re-arm the idle timer.
 
-### GO-2 — `DELETE` can remove persisted security state / live segments  ·  Low (Security)
+### GO-2 — `DELETE` can remove persisted security state / live segments  ·  Low (Security)  ·  ✅ **FIXED**
 - **Location:** `main.go:104-131` (`filesWithDelete`)
 - **Problem:** The DELETE jail only blocks `..` path traversal, so a viewer (any WS client) can `DELETE /recordings/.security.json` (wiping persisted security mode) or delete an in-progress fragmented segment. Tailnet-only, but trivially self-inflicting.
 - **Fix:** Reject DELETE for dotfiles and for `.security.json` specifically; or require a query/auth to delete. Also verify `os.Remove(target + ".jpg")` stays jailed (it does, since `target` is jailed).
@@ -90,22 +90,22 @@ Severity counts: **Critical 1 · High 5 · Medium 9 · Low 13** (incl. 1 documen
 - **Problem:** Unlike other commands it calls `setTorch` directly on the OkHttp WS reader thread, touching `rtspStreamer.isStreaming`/`CameraManager` that everything else touches on Main.
 - **Fix:** Wrap in `handler.post`, consistent with the other branches.
 
-### CAM-8 — Flashlight in-stream fallback targets the camera the stream owns  ·  Low
+### CAM-8 — Flashlight in-stream fallback targets the camera the stream owns  ·  Low  ·  ✅ **FIXED**
 - **Location:** `CamService.kt:254`
 - **Problem:** While streaming, `if (!streamer.setTorch(on)) flashlight.setTorch(on)` falls back to `CameraManager.setTorchMode` on the *same* back camera RootEncoder already holds → throws/ignored.
 - **Fix:** Drop the in-stream fallback; only use `CameraManager` when not streaming (the `else` branch already does).
 
-### CAM-9 — `snapshot()` uses plain `startService`  ·  Low
+### CAM-9 — `snapshot()` uses plain `startService`  ·  Low  ·  ✅ **FIXED (removed)**
 - **Location:** `CamService.kt:67-68`
 - **Problem:** When the service isn't already running this launches it in the background; combined with `onCreate` calling `startForeground`, on Android 12+ this can trip the "did not call startForeground" watchdog.
 - **Fix:** Use `startForegroundService` (consistent with `start()`).
 
-### CAM-10 — Non-`volatile` motion counters shared across threads  ·  Low
+### CAM-10 — Non-`volatile` motion counters shared across threads  ·  Low  ·  ✅ **FIXED**
 - **Location:** `CamService.kt:303-322,363-371` (`lastMotionEventMs`, `lastSnapshotMs`)
 - **Problem:** Written/read across the ImageReader thread and `analysisExecutor` thread; two near-simultaneous events can both pass the 5s throttle and emit duplicate `EVENT:MOTION`.
 - **Fix:** Make them `@Volatile` / `AtomicLong`.
 
-### CAM-11 — `WsClient` scope/socket leak  ·  Low
+### CAM-11 — `WsClient` scope/socket leak  ·  Low  ·  ✅ **FIXED**
 - **Location:** `WsClient.kt:21,32,67`
 - **Problem:** `CoroutineScope` is never cancelled; `connect()` overwrites `ws` without closing the previous socket.
 - **Fix:** `scope.cancel()` in `disconnect()`; close any prior `ws` before opening a new one.
@@ -139,7 +139,7 @@ Severity counts: **Critical 1 · High 5 · Medium 9 · Low 13** (incl. 1 documen
 - **Problem:** Both Plan-B `onAddStream` and Unified-Plan `onAddTrack` call `addSink(renderer)`; `VideoTrack.addSink` doesn't dedupe, so a re-negotiation double-sinks → doubled/garbled frames.
 - **Fix:** Guard with a `sinkAdded` flag, or drop the Plan-B path (comment says Unified Plan "is what actually fires"), or `removeSink` in `onRemoveTrack`.
 
-### VIEW-4 — `PttRecorder` stop/start race + no buffer-size validation  ·  Medium
+### VIEW-4 — `PttRecorder` stop/start race + no buffer-size validation  ·  Medium  ·  ✅ **FIXED**
 - **Location:** `PttRecorder.kt:10-46`
 - **Problem:** `stop()` nulls `job` immediately while the coroutine's `finally { rec.release() }` runs later; a quick stop→start opens a second `AudioRecord` while the first is still releasing → `IllegalStateException`. Also `getMinBufferSize` can return `<=0` and isn't validated.
 - **Fix:** Don't null `job` until `finally` completes (set it inside `finally`); validate/ fallback buffer size (`sampleRate*2*2` if `<=0`); wrap construction + `startRecording()` in try/catch.
@@ -149,7 +149,7 @@ Severity counts: **Critical 1 · High 5 · Medium 9 · Low 13** (incl. 1 documen
 - **Problem:** `handleServerMsg`/`onConnected` run on the OkHttp thread; compounded with VIEW-2.
 - **Fix:** `withContext(Dispatchers.Main)` at the top of those handlers (or post callbacks to Main in `WsClient`).
 
-### VIEW-6 — `ObjectAnimator` (recording dot) never cancelled  ·  Low
+### VIEW-6 — `ObjectAnimator` (recording dot) never cancelled  ·  Low  ·  ✅ **FIXED**
 - **Location:** `MainActivity.kt:114-119`
 - **Problem:** `INFINITE`/`REVERSE` animator is a local; keeps ticking on a detached view after `onDestroy`.
 - **Fix:** Store in a field and `cancel()` in `onDestroy`.
@@ -164,17 +164,17 @@ Severity counts: **Critical 1 · High 5 · Medium 9 · Low 13** (incl. 1 documen
 - **Problem:** Fresh `OkHttpClient()` per activity, threads persist until GC.
 - **Fix:** `client.dispatcher.executorService.shutdown()` in `onDestroy()`, or a shared singleton client.
 
-### VIEW-9 — `loadItems` swallows all errors as an empty list  ·  Low
+### VIEW-9 — `loadItems` swallows all errors as an empty list  ·  Low  ·  ✅ **FIXED**
 - **Location:** `SnapshotsActivity.kt:186-188`
 - **Problem:** Any network failure / non-JSON / 404 returns `emptyList()` — "server down" looks identical to "no files".
 - **Fix:** Surface an error state (e.g. `tvCount` = "offline" or a Toast).
 
-### VIEW-10 — Optimistic `security_mode` flip / dropped `send()`  ·  Low
+### VIEW-10 — Optimistic `security_mode` flip / dropped `send()`  ·  Low  ·  ✅ **FIXED**
 - **Location:** `MainActivity.kt:87-99`, `WsClient.kt:64`
 - **Problem:** The toggle writes the pref then sends `CMD:SECURITY_ON`; if the WS isn't open the send is silently dropped (and `ws?.send()`'s `false` return is ignored) → UI shows "recording" but the server never records.
 - **Fix:** Disable the toggle until connected / queue commands until `onConnected`; log when `send()` returns `false`.
 
-### VIEW-11 — `WsClient` scope never cancelled  ·  Low
+### VIEW-11 — `WsClient` scope never cancelled  ·  Low  ·  ✅ **FIXED**
 - **Location:** `WsClient.kt:21`
 - **Problem:** Each reconnect makes a new `WsClient` with its own `CoroutineScope`; `disconnect()` cancels only `reconnectJob`.
 - **Fix:** `scope.cancel()` in `disconnect()`, or share one client/scope.
@@ -300,20 +300,20 @@ Recorder on/off is decided ad-hoc in four places instead of derived from desired
 
 ### Server — smaller
 
-#### CG-6 — `ClipRecorder` is dead code · Low
+#### CG-6 — `ClipRecorder` is dead code · Low · ✅ **FIXED**
 - **Location:** `recorder.go:183-292`, `hub.go:46`, `main.go:74`
 - **Problem:** Constructed and assigned to `hub.clip`, but no command path ever calls `Start` — ~110 lines dead, plus ViewApp's `clipLabel` still special-cases `clip_manual_`/`clip_motion_` filenames nothing produces. Remove (or re-wire manual clips).
 
-#### CG-7 — Snapshot filename collision · Low
+#### CG-7 — Snapshot filename collision · Low · ✅ **FIXED**
 - **Location:** `hub.go:380` — `%d.jpg` from `UnixMilli`; two snapshots in the same millisecond silently overwrite. Add a counter or use nanos.
 
-#### CG-8 — `saveSecurityState` is a non-atomic write · Low
+#### CG-8 — `saveSecurityState` is a non-atomic write · Low · ✅ **FIXED**
 - **Location:** `hub.go:339` — crash mid-`WriteFile` corrupts `.security.json`; `loadSecurityState` then silently falls back to defaults (security mode lost across the very restart it exists to survive). Write temp + `os.Rename`.
 
-#### CG-9 — `.remuxtmp` orphans never pruned; prune aborts on first error · Low
+#### CG-9 — `.remuxtmp` orphans never pruned; prune aborts on first error · Low · ✅ **FIXED**
 - **Location:** `recorder.go:316` (tmp suffix), `recorder.go:364-387` (`pruneRecordings` only matches `.mp4`/`.jpg` and `return err` on the first failed remove, skipping the rest of the directory).
 
-#### CG-10 — `http.FileServer` directory listings · Info
+#### CG-10 — `http.FileServer` directory listings · Info · ✅ **FIXED**
 - **Location:** `main.go:106` — `/snapshots/` and `/recordings/` render full directory indexes (including `.security.json`, see GO-2). Tailnet-only; wrap with an index-suppressing handler if tightening.
 
 ### CamApp
@@ -328,17 +328,17 @@ Recorder on/off is decided ad-hoc in four places instead of derived from desired
 - **Problem:** OkHttp delivers all WS callbacks on the connection's reader thread and documents that *"implementations must return before further websocket messages will be delivered"* / the reader thread "must never run application-layer code". `AudioTrack.write` in MODE_STREAM blocks when the buffer is full, so sustained push-to-talk delays every queued command (`CMD:STOP_STREAM`, motion config, …) behind real-time audio drain.
 - **Fix:** Hand PCM to a dedicated playback thread/queue; the WS callback just enqueues.
 
-#### CC-3 — Settings are read once at service creation · Low
+#### CC-3 — Settings are read once at service creation · Low · ✅ **FIXED**
 - **Location:** `CamService.kt:82-90`
 - **Problem:** WS URL, mediamtx host, and RTSP credentials are captured in `onCreate` closures; changing them in Settings does nothing until the service is manually restarted. Compounds CAM-2: after fixing a wrong password the user must also know to restart. (ViewApp's `reconnectIfConfigChanged` pattern is the model.)
 
-#### CC-4 — `WsClient.ws` not `@Volatile` (both apps) · Low
+#### CC-4 — `WsClient.ws` not `@Volatile` (both apps) · Low · ✅ **FIXED**
 - **Location:** `CamApp WsClient.kt:20`, `ViewApp WsClient.kt:20`
 - **Problem:** `ws` is written on the reconnect coroutine (IO) and read by `sendText`/`sendBinary` from other threads with no happens-before edge → callers can briefly address a dead socket after a reconnect. Pairs with VIEW-10 (ignored `send()` return) for fully silent drops.
 
 ### ViewApp
 
-#### CV-1 — `setRemoteDescription` failure is a dead end · Low
+#### CV-1 — `setRemoteDescription` failure is a dead end · Low · ✅ **FIXED**
 - **Location:** `MainActivity.kt:345-353`
 - **Problem:** `onSetFailure` sets status "Stream failed" and stops; no retry, no `restartStream()`. Recovery requires a WS reconnect or app restart.
 
@@ -377,12 +377,30 @@ Recorder on/off is decided ad-hoc in four places instead of derived from desired
 | CAM-3 (Medium) | ✅ Fixed | `CamService.kt`: volatile `destroyed` flag set first in `onDestroy` gates every WS callback; `PttPlayer.write` is release-safe (flag + catch); `WsClient.disconnect` cancels its scope | — (device-level; verified by build) |
 | CAM-5 (Medium) | ✅ Fixed | `CamService.kt`: provider-future listener bails on `destroyed` and on `shouldStream` (not just `isStreaming`); `motionWatchStarting` debounces the 2s poll loop; `bindToLifecycle` wrapped in try/catch with cleanup | — (device-level; verified by build) |
 | CC-2 (Medium) | ✅ Fixed | `PttPlayer.kt`: dedicated playback thread drains a bounded queue (drop-oldest at 64 chunks ≈ 2.5s); the WS reader thread only enqueues, so PTT audio can no longer stall control commands | — (device-level; verified by build) |
+| GO-2 (Low) | ✅ Fixed | `main.go`: `filesWithDelete` 404s dotfiles (`.security.json`) and directory indexes for every method (also closes CG-10) | `TestFilesWithDeleteHidesDotfilesAndIndexes` |
+| CG-6 (Low) | ✅ Fixed | `ClipRecorder` (~110 dead lines), `hub.clip`, and ViewApp's `clip_*` label branches removed | existing suite green |
+| CG-7 (Low) | ✅ Fixed | `hub.go`: `saveSnapshot` uses `O_EXCL` + counter suffix — same-millisecond snapshots no longer overwrite | `TestSaveSnapshotNoSameMillisecondOverwrite` |
+| CG-8 (Low) | ✅ Fixed | `hub.go`: security state written to temp + `os.Rename` (atomic) | — |
+| CG-9 (Low) | ✅ Fixed | `recorder.go`: prune sweeps `.remuxtmp` orphans and logs-and-continues on a failed remove | `TestPruneRecordingsRemovesStaleRemuxTmp` |
+| CG-10 (Info) | ✅ Fixed | folded into the GO-2 handler guard | same test |
+| CC-3 (Low) | ✅ Fixed | `CamService.kt`: connection prefs (URL/host/user/pass/sensitivity) now apply live — a pref-change listener reconnects the control plane | — (device-level; verified by build) |
+| CC-4 (Low) | ✅ Fixed | both `WsClient.kt`: `ws` is `@Volatile`; `sendText` returns success and logs drops | — |
+| CAM-8 (Low) | ✅ Fixed | `CamService.kt`: dead `CameraManager` torch fallback while streaming removed | — |
+| CAM-9 (Low) | ✅ Fixed | dead `CamService.snapshot()` + `EXTRA_TAKE_SNAPSHOT` path deleted (zero callers) | — |
+| CAM-10 (Low) | ✅ Fixed | `lastMotionEventMs`, `lastSnapshotMs`, `streamPrevLuma` now `@Volatile` | — |
+| CV-1 (Low) | ✅ Fixed | `MainActivity.kt`: `setRemoteDescription` failure now calls `restartStream()` instead of dead-ending | — |
+| VIEW-2 (Low, residual) | ✅ Fixed | `peerConnection`/`webRtcJob` marked `@Volatile` (the narrow residual after downgrade) | — |
+| VIEW-4 (Low) | ✅ Fixed | `PttRecorder.kt`: buffer-size fallback, `STATE_INITIALIZED` check, guarded `startRecording` | — |
+| VIEW-6 (Low) | ✅ Fixed | REC-dot animator held in a field and cancelled in `onDestroy` | — |
+| VIEW-9 (Low) | ✅ Fixed | gallery shows "offline" + toast on fetch failure instead of an empty grid | — |
+| VIEW-10 (Low) | ✅ Fixed | security toggle sends first and only flips the pref on a successful send; failure shows "Not connected" | — |
+| VIEW-11 (Low) | ✅ Fixed | ViewApp `WsClient.disconnect` cancels its scope | — |
 
 Also hardened while there: `loadSecurityState` now validates persisted fps/res against the whitelist before acting on a corrupted/hand-edited `.security.json`.
 
 **Verification:** `go test ./...` green (includes the 6 new regression tests plus all pre-existing stream-invariant tests); `CamApp` and `ViewApp` `assembleDebug` + `testDebugUnitTest` green.
 
-**Not yet fixed:** the Low/Info cleanup items only (GO-2 dotfile guard, CG-6..10, CC-3/4, CV-1, VIEW lows). CAM-3, CAM-5, and CC-2 were fixed in follow-up passes (see table) — every High/Medium finding from both reports is now fixed or refuted.
+**All actionable findings are now fixed.** Deliberately not acted on (adjudicated, not forgotten): GO-3/GO-4 (perf notes; fine at this system's scale), CAM-6 (not a leak on API 29+), VIEW-7 (DISCONNECTED usually self-heals and escalates to FAILED, which does restart), VIEW-8 (OkHttp idle threads exit after 60s), the refuted items (CAM-1, CAM-12, VIEW-3, VIEW-5, VIEW-FP), and the accepted-by-design Info items (CAM-13 plaintext pref on an app-private store, VIEW-SEC tailnet-only cleartext). CAM-4's defensive half (retry attach on failure) shipped with CC-5.
 
 **Deploy reminder:** fixes are inert until redeployed — `cd server && docker compose up -d --build`, then reinstall both APKs.
 

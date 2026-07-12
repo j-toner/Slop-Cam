@@ -33,3 +33,22 @@ func TestRecorderRetriesQuicklyAfterConnectFailure(t *testing.T) {
 		t.Errorf("got %d ffmpeg attempts in 2.5s, want >= 3 (retry backoff too slow)", n)
 	}
 }
+
+// CG-9: orphaned .remuxtmp files (crashed remux) must age out with the
+// retention sweep like everything else.
+func TestPruneRecordingsRemovesStaleRemuxTmp(t *testing.T) {
+	dir := t.TempDir()
+	old := filepath.Join(dir, "cam_old.mp4.remuxtmp")
+	if err := os.WriteFile(old, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().AddDate(0, 0, -30)
+	os.Chtimes(old, past, past)
+
+	if err := pruneRecordings(dir, 14, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Error("stale .remuxtmp survived the prune")
+	}
+}

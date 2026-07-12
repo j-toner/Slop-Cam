@@ -177,20 +177,28 @@ class SnapshotsActivity : AppCompatActivity() {
         val endpoint = if (showingClips) "/recordings" else "/snapshots"
         val forClips = showingClips
         scope.launch {
-            val fetched = withContext(Dispatchers.IO) {
+            // null = fetch failed; distinct from an empty gallery so "server
+            // unreachable" doesn't render as "no files"
+            val fetched: List<String>? = withContext(Dispatchers.IO) {
                 try {
                     val req = Request.Builder().url("$httpBase$endpoint").build()
                     val body = client.newCall(req).execute().body?.string() ?: "[]"
                     val arr = JSONArray(body)
                     (0 until arr.length()).map { "$httpBase${arr.getString(it)}" }
                 } catch (e: Exception) {
-                    emptyList()
+                    null
                 }
             }
             if (forClips == showingClips) { // tab may have switched mid-fetch
-                urls = fetched
-                grid.adapter = SnapshotAdapter(this@SnapshotsActivity, urls, showingClips, selected)
-                findViewById<TextView>(R.id.tvCount).text = urls.size.toString()
+                if (fetched == null) {
+                    findViewById<TextView>(R.id.tvCount).text = "offline"
+                    Toast.makeText(this@SnapshotsActivity,
+                        "Server unreachable", Toast.LENGTH_SHORT).show()
+                } else {
+                    urls = fetched
+                    grid.adapter = SnapshotAdapter(this@SnapshotsActivity, urls, showingClips, selected)
+                    findViewById<TextView>(R.id.tvCount).text = urls.size.toString()
+                }
             }
             onDone()
         }
@@ -239,15 +247,10 @@ class SnapshotAdapter(
 
     private val stamp = Regex("""(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})""")
 
-    // "clip_motion_2026-07-09_17-30-01.mp4" -> "motion 2026-07-09\n17:30"
+    // "cam_2026-07-09_17-30-01.mp4" -> "2026-07-09\n17:30"
     private fun clipLabel(url: String): String {
         val name = url.substringAfterLast('/')
         val m = stamp.find(name) ?: return name.removeSuffix(".mp4")
-        val kind = when {
-            name.startsWith("clip_motion") -> "motion "
-            name.startsWith("clip_manual") -> "manual "
-            else -> ""
-        }
-        return "$kind${m.groupValues[1]}\n${m.groupValues[2]}:${m.groupValues[3]}"
+        return "${m.groupValues[1]}\n${m.groupValues[2]}:${m.groupValues[3]}"
     }
 }

@@ -50,8 +50,7 @@ type Hub struct {
 	fromViewer  chan Message
 	snapshotDir string
 	recorder    recorderControl // nil when recording is unavailable (tests)
-	clip        *ClipRecorder   // nil in tests (manual clips, if any)
-	stateFile   string        // "" = don't persist security state
+	stateFile   string          // "" = don't persist security state
 	security    securityState
 	// stream need-state: the cam streams while a viewer, security mode, or
 	// motion recording needs it. Tracked so we only send START/STOP_STREAM
@@ -191,8 +190,7 @@ func (h *Hub) run() {
 }
 
 // handleServerCmd owns viewer commands addressed to the server rather than
-// the cam: security-camera mode, motion-triggered recording, and manual
-// clip recording.
+// the cam: security-camera mode and motion-triggered recording.
 func (h *Hub) handleServerCmd(cmd string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -390,7 +388,14 @@ func (h *Hub) saveSecurityState() {
 	}
 	h.security.MotionRec = h.motionRec
 	data, _ := json.Marshal(h.security)
-	if err := os.WriteFile(h.stateFile, data, 0644); err != nil {
+	// temp + rename: a crash mid-write must not corrupt the state file
+	// (loadSecurityState silently falls back to defaults on bad JSON)
+	tmp := h.stateFile + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		log.Printf("save security state: %v", err)
+		return
+	}
+	if err := os.Rename(tmp, h.stateFile); err != nil {
 		log.Printf("save security state: %v", err)
 	}
 }
@@ -432,7 +437,26 @@ func (h *Hub) saveSnapshot(data []byte) (string, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", err
 	}
-	name := fmt.Sprintf("%d.jpg", time.Now().UnixMilli())
-	path := filepath.Join(dir, name)
-	return path, os.WriteFile(path, data, 0644)
+	// O_EXCL + a counter suffix: two snapshots in the same millisecond get
+	// distinct files instead of the second silently overwriting the first
+	ms := time.Now().UnixMilli()
+	for i := 0; ; i++ {
+		name := fmt.Sprintf("%d.jpg", ms)
+		if i > 0 {
+			name = fmt.Sprintf("%d-%d.jpg", ms, i)
+		}
+		path := filepath.Join(dir, name)
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+		if os.IsExist(err) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		_, werr := f.Write(data)
+		if cerr := f.Close(); werr == nil {
+			werr = cerr
+		}
+		return path, werr
+	}
 }

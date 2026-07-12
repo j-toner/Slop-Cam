@@ -71,7 +71,6 @@ func main() {
 
 	hub := newHub(snapshotDir)
 	hub.recorder = newRecorder(rtspURL, recordDir, recordCrf)
-	hub.clip = newClipRecorder(rtspURL, recordDir)
 	hub.stateFile = filepath.Join(recordDir, ".security.json")
 	hub.loadSecurityState()
 	go hub.run()
@@ -101,10 +100,18 @@ func main() {
 
 // filesWithDelete serves files from dir and honors DELETE on individual
 // files. Paths are jailed to dir; only regular files can be removed.
+// Dotfiles (RECORD_DIR holds the persisted .security.json) and directory
+// indexes are internal — clients list via /snapshots and /recordings, so
+// anything that isn't a plain media file is a 404 for every method.
 func filesWithDelete(dir string) http.Handler {
 	root := filepath.Clean(dir)
 	fs := http.FileServer(http.Dir(root))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "" || strings.HasSuffix(r.URL.Path, "/") ||
+			hasDotSegment(r.URL.Path) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
 		if r.Method != http.MethodDelete {
 			fs.ServeHTTP(w, r)
 			return
@@ -128,6 +135,16 @@ func filesWithDelete(dir string) http.Handler {
 		log.Printf("deleted %s", rel)
 		w.WriteHeader(http.StatusNoContent)
 	})
+}
+
+// hasDotSegment reports whether any segment of the URL path starts with ".".
+func hasDotSegment(p string) bool {
+	for _, seg := range strings.Split(p, "/") {
+		if strings.HasPrefix(seg, ".") {
+			return true
+		}
+	}
+	return false
 }
 
 func pruneLoop(dir string, retentionDays int) {
