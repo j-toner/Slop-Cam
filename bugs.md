@@ -323,7 +323,7 @@ Recorder on/off is decided ad-hoc in four places instead of derived from desired
 - **Problem:** The START_STREAM command path calls `stopMotionWatch()` before starting; the **error-retry path does not** (`onError` → `postDelayed({ tryStartStream() }, 5000)`). Meanwhile the 2s poll loop re-binds CameraX whenever `!isStreaming && detect on`. One failed stream start with motion detection enabled → CameraX grabs the camera → the retry opens it via Camera2. Per Camera2 docs, the second open either fails `CAMERA_IN_USE` or force-disconnects the current client (`CAMERA_DISCONNECTED`, "the camera service has shut down the connection due to a higher-priority access request"), and disconnected clients are told to retry on `onCameraAccessPrioritiesChanged` — so the two stacks can evict each other in a loop and the stream may never come back without operator intervention.
 - **Fix:** `tryStartStream()` calls `stopMotionWatch()` first (it already runs on the main handler), and/or the poll loop refuses to bind while `shouldStream` is true.
 
-#### CC-2 — PTT audio playback blocks the WebSocket reader thread · Medium
+#### CC-2 — PTT audio playback blocks the WebSocket reader thread · Medium · ✅ **FIXED**
 - **Location:** `CamService.kt:109` (`onBinary = { pcm -> pttPlayer.write(pcm) }`), `PttPlayer.kt:30`
 - **Problem:** OkHttp delivers all WS callbacks on the connection's reader thread and documents that *"implementations must return before further websocket messages will be delivered"* / the reader thread "must never run application-layer code". `AudioTrack.write` in MODE_STREAM blocks when the buffer is full, so sustained push-to-talk delays every queued command (`CMD:STOP_STREAM`, motion config, …) behind real-time audio drain.
 - **Fix:** Hand PCM to a dedicated playback thread/queue; the WS callback just enqueues.
@@ -376,12 +376,13 @@ Recorder on/off is decided ad-hoc in four places instead of derived from desired
 | VIEW-1 (High) | ✅ Fixed | `MainActivity.kt`: `onDestroy` does `runBlocking { webRtcJob?.cancelAndJoin() }` and cancels the scope before disposing native WebRTC objects | — (device-level; verified by build) |
 | CAM-3 (Medium) | ✅ Fixed | `CamService.kt`: volatile `destroyed` flag set first in `onDestroy` gates every WS callback; `PttPlayer.write` is release-safe (flag + catch); `WsClient.disconnect` cancels its scope | — (device-level; verified by build) |
 | CAM-5 (Medium) | ✅ Fixed | `CamService.kt`: provider-future listener bails on `destroyed` and on `shouldStream` (not just `isStreaming`); `motionWatchStarting` debounces the 2s poll loop; `bindToLifecycle` wrapped in try/catch with cleanup | — (device-level; verified by build) |
+| CC-2 (Medium) | ✅ Fixed | `PttPlayer.kt`: dedicated playback thread drains a bounded queue (drop-oldest at 64 chunks ≈ 2.5s); the WS reader thread only enqueues, so PTT audio can no longer stall control commands | — (device-level; verified by build) |
 
 Also hardened while there: `loadSecurityState` now validates persisted fps/res against the whitelist before acting on a corrupted/hand-edited `.security.json`.
 
 **Verification:** `go test ./...` green (includes the 6 new regression tests plus all pre-existing stream-invariant tests); `CamApp` and `ViewApp` `assembleDebug` + `testDebugUnitTest` green.
 
-**Not yet fixed:** CC-2 (PTT off the WS reader thread), and the Low/Info cleanup items (GO-2 dotfile guard, CG-6..10, CC-3/4, CV-1, VIEW lows). CAM-3 and CAM-5 were fixed in a follow-up pass (see table).
+**Not yet fixed:** the Low/Info cleanup items only (GO-2 dotfile guard, CG-6..10, CC-3/4, CV-1, VIEW lows). CAM-3, CAM-5, and CC-2 were fixed in follow-up passes (see table) — every High/Medium finding from both reports is now fixed or refuted.
 
 **Deploy reminder:** fixes are inert until redeployed — `cd server && docker compose up -d --build`, then reinstall both APKs.
 
