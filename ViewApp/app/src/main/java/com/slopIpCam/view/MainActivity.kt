@@ -37,6 +37,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var eglBase: EglBase
     private lateinit var renderer: SurfaceViewRenderer
     private var recAnimator: ObjectAnimator? = null
+    private var motionAnimator: ObjectAnimator? = null
+    // server-reported: a motion window is currently recording (EVENT:MOTION_REC)
+    @Volatile private var motionRecActive = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -126,6 +129,41 @@ class MainActivity : AppCompatActivity() {
             repeatCount = ValueAnimator.INFINITE
             start()
         }
+        motionAnimator = ObjectAnimator.ofFloat(findViewById<View>(R.id.motionDot), View.ALPHA, 1f, 0.25f).apply {
+            duration = 800
+            repeatMode = ValueAnimator.REVERSE
+            repeatCount = ValueAnimator.INFINITE
+            start()
+        }
+    }
+
+    /**
+     * Motion chip states: hidden (motion features off), dim "MOTION"
+     * (detection armed, idle), pulsing dot + "MOTION REC" (the server's
+     * motion window is recording right now, per EVENT:MOTION_REC).
+     */
+    private fun updateMotionIndicator() {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val armed = prefs.getBoolean("motion_record", false) ||
+            prefs.getBoolean("motion_snaps", false)
+        val chip = findViewById<View>(R.id.motionChip)
+        val dot = findViewById<View>(R.id.motionDot)
+        val label = findViewById<TextView>(R.id.motionLabel)
+        when {
+            motionRecActive -> {
+                chip.visibility = View.VISIBLE
+                dot.visibility = View.VISIBLE
+                label.text = "MOTION REC"
+                label.setTextColor(0xFFFFAB00.toInt())
+            }
+            armed -> {
+                chip.visibility = View.VISIBLE
+                dot.visibility = View.GONE
+                label.text = "MOTION"
+                label.setTextColor(getColor(R.color.text_dim))
+            }
+            else -> chip.visibility = View.GONE
+        }
     }
 
     // onStart runs both on first launch and on return from Settings, so a
@@ -137,6 +175,7 @@ class MainActivity : AppCompatActivity() {
         // syncs from its onConnected callback instead
         syncCamConfig()
         updateRecIndicator()
+        updateMotionIndicator()
         requestNotifPermissionIfNeeded()
     }
 
@@ -393,6 +432,10 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "Lens: ${msg.substringAfterLast(':')}",
                     Toast.LENGTH_SHORT).show()
             }
+            msg.startsWith("EVENT:MOTION_REC:") -> {
+                motionRecActive = msg.endsWith(":1")
+                runOnUiThread { updateMotionIndicator() }
+            }
             msg == "EVENT:MOTION" -> {
                 val prefs = PreferenceManager.getDefaultSharedPreferences(this)
                 if (prefs.getBoolean("motion_notify", false)) notifyMotion()
@@ -427,7 +470,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        recAnimator?.cancel() // INFINITE animator keeps Choreographer ticking
+        recAnimator?.cancel() // INFINITE animators keep Choreographer ticking
+        motionAnimator?.cancel()
         wsClient?.disconnect()
         pttRecorder.stop()
         // join, not just cancel: startWebRtc may still be touching the

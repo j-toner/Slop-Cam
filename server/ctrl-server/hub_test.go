@@ -105,7 +105,8 @@ func TestSnapshotNotifyIncludesDayDir(t *testing.T) {
 	cam := wsConnect(t, srv, "cam")
 	viewer := wsConnect(t, srv, "viewer")
 	time.Sleep(50 * time.Millisecond)
-	readMsg(t, cam) // drain START_STREAM
+	readMsg(t, cam)    // drain START_STREAM
+	readMsg(t, viewer) // drain EVENT:MOTION_REC state sync
 
 	cam.Write(context.Background(), websocket.MessageBinary, []byte("fakejpeg"))
 
@@ -596,5 +597,42 @@ func TestSaveSnapshotNoSameMillisecondOverwrite(t *testing.T) {
 	}
 	if len(paths) != n {
 		t.Errorf("%d snapshots produced %d files", n, len(paths))
+	}
+}
+
+// Viewers get told when motion recording actually starts and stops
+// (EVENT:MOTION_REC:1/0), and a newly registered viewer receives the
+// current state so its indicator is right after a reconnect.
+func TestMotionRecStateBroadcastToViewers(t *testing.T) {
+	motionIdleDuration = 150 * time.Millisecond
+	motionSpinupGrace = 0
+	defer func() {
+		motionIdleDuration = 10 * time.Second
+		motionSpinupGrace = 5 * time.Second
+	}()
+	_, srv, _ := newTestServerWithRecorder(t)
+	cam := wsConnect(t, srv, "cam")
+	viewer := wsConnect(t, srv, "viewer")
+	time.Sleep(50 * time.Millisecond)
+	readMsg(t, cam) // drain START_STREAM
+
+	// state sync on register: not recording yet
+	if msg := readMsg(t, viewer); msg != "EVENT:MOTION_REC:0" {
+		t.Fatalf("on register got %q, want EVENT:MOTION_REC:0", msg)
+	}
+
+	ctx := context.Background()
+	viewer.Write(ctx, websocket.MessageText, []byte("CMD:MOTION_REC_ON:1:480p"))
+	readMsg(t, cam) // drain CMD:MOTION
+
+	cam.Write(ctx, websocket.MessageText, []byte("EVENT:MOTION"))
+	if msg := readMsg(t, viewer); msg != "EVENT:MOTION_REC:1" {
+		t.Errorf("on motion got %q, want EVENT:MOTION_REC:1", msg)
+	}
+	readMsg(t, viewer) // the raw EVENT:MOTION broadcast follows
+
+	// window expires -> recording off
+	if msg := readMsg(t, viewer); msg != "EVENT:MOTION_REC:0" {
+		t.Errorf("on expiry got %q, want EVENT:MOTION_REC:0", msg)
 	}
 }

@@ -124,6 +124,8 @@ func (h *Hub) run() {
 				}
 				log.Println("viewer registered")
 				h.ensureStreamLocked()
+				// sync the motion-recording indicator on (re)connect
+				c.sendMsg(websocket.MessageText, h.motionRecStateMsg())
 			}
 			h.mu.Unlock()
 
@@ -203,7 +205,10 @@ func (h *Hub) handleServerCmd(cmd string) {
 		h.applyMotionToCamLocked()
 	case cmd == "CMD:MOTION_REC_OFF":
 		h.motionRec = false
-		h.motionActive = false
+		if h.motionActive {
+			h.motionActive = false
+			h.broadcastViewersLocked(h.motionRecStateMsg())
+		}
 		h.motionGen++ // invalidate any armed idle timer
 		if h.motionTimer != nil {
 			h.motionTimer.Stop()
@@ -275,6 +280,7 @@ func (h *Hub) onMotionEvent() {
 		}
 		h.motionActive = true
 		h.ensureRecorderLocked()
+		h.broadcastViewersLocked(h.motionRecStateMsg())
 	}
 	h.ensureStreamLocked()
 	// each event re-arms the window under a new generation, so an expiry
@@ -301,6 +307,24 @@ func (h *Hub) motionExpired(gen int) {
 	h.motionTimer = nil
 	h.ensureRecorderLocked()
 	h.ensureStreamLocked()
+	h.broadcastViewersLocked(h.motionRecStateMsg())
+}
+
+// caller holds h.mu — current motion-recording state for viewer indicators
+func (h *Hub) motionRecStateMsg() []byte {
+	s := "0"
+	if h.motionActive {
+		s = "1"
+	}
+	return []byte("EVENT:MOTION_REC:" + s)
+}
+
+// caller holds h.mu — broadcastViewers takes the read lock itself, so
+// paths already holding the write lock use this instead
+func (h *Hub) broadcastViewersLocked(data []byte) {
+	for v := range h.viewers {
+		v.sendMsg(websocket.MessageText, data)
+	}
 }
 
 // caller holds h.mu — run the recorder exactly when security mode or an
