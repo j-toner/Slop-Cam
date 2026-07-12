@@ -261,6 +261,8 @@ func (h *Hub) handleServerCmd(cmd string) {
 func (h *Hub) onMotionEvent() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	log.Printf("motion event (rec=%v active=%v streaming=%v)",
+		h.motionRec, h.motionActive, h.streaming)
 	if !h.motionRec || h.cam == nil {
 		return
 	}
@@ -294,6 +296,7 @@ func (h *Hub) motionExpired(gen int) {
 	if gen != h.motionGen {
 		return // a fresh motion event re-armed the window; this timer lost
 	}
+	log.Printf("motion window expired (gen=%d)", gen)
 	h.motionActive = false
 	h.motionTimer = nil
 	h.ensureRecorderLocked()

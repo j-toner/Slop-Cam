@@ -122,6 +122,7 @@ class RtspStreamer(
     /** Set before the first start(); frames arrive on the ImageReader thread. */
     var motionFrameCb: ((ByteArray, Int, Int, Int) -> Unit)? = null
     private var lastMotionFrameMs = 0L
+    @Volatile private var tapFramesSeen = false
 
     /**
      * Tap the stream's camera frames for motion analysis (Y plane + dims).
@@ -141,6 +142,10 @@ class RtspStreamer(
                 object : com.pedro.encoder.input.video.Camera2ApiManager.ImageCallback {
                     override fun onImageAvailable(image: android.media.Image) {
                         try {
+                            if (!tapFramesSeen) {
+                                tapFramesSeen = true
+                                Log.i("RtspStreamer", "motion tap delivering frames")
+                            }
                             // ~2 fps is plenty for motion; skip the copy otherwise
                             val now = System.currentTimeMillis()
                             if (now - lastMotionFrameMs < 500) return

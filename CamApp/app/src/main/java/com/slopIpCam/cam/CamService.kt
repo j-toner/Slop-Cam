@@ -343,6 +343,7 @@ class CamService : Service(), LifecycleOwner {
         val now = System.currentTimeMillis()
         if (now - lastMotionEventMs >= 5000) {
             lastMotionEventMs = now
+            Log.i("CamService", "in-stream motion -> EVENT:MOTION")
             wsClient.sendText("EVENT:MOTION")
         }
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
@@ -406,6 +407,7 @@ class CamService : Service(), LifecycleOwner {
                         // clips; throttled independently of snapshots
                         if (now - lastMotionEventMs >= 5000) {
                             lastMotionEventMs = now
+                            Log.i("CamService", "camerax motion -> EVENT:MOTION")
                             wsClient.sendText("EVENT:MOTION")
                         }
                         if (motionSnapshots && now - lastSnapshotMs >= intervalMs) {
