@@ -113,6 +113,12 @@ func filesWithDelete(dir string) http.Handler {
 			return
 		}
 		if r.Method != http.MethodDelete {
+			// APKs staged for phone-browser download: Go's sniffer calls
+			// them application/zip and the browser saves a .zip — force
+			// the real type so Android offers to install instead
+			if strings.HasSuffix(r.URL.Path, ".apk") {
+				w.Header().Set("Content-Type", "application/vnd.android.package-archive")
+			}
 			fs.ServeHTTP(w, r)
 			return
 		}
