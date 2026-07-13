@@ -395,6 +395,9 @@ class CamService : Service(), LifecycleOwner {
                 return@addListener
             }
             cameraProvider = providerFuture.get()
+            // fresh camera session: auto-exposure ramps over the first
+            // frames and reads as full-frame motion — settle first
+            muteMotionDetection()
             val analysis = ImageAnalysis.Builder()
                 .setTargetResolution(android.util.Size(640, 480))
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
