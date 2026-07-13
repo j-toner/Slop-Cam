@@ -39,8 +39,9 @@
                 android:textSize="12sp" android:textStyle="bold" />
         </LinearLayout>
 
-        <!-- motion state: dim "MOTION" while detection is armed, pulsing
-             dot + "MOTION REC" while the server's motion window records -->
+        <!-- motion state: dim stick-figure icon while detection is armed,
+             red icon + pulsing record dot while the server's motion window
+             is recording (EVENT:MOTION_REC) -->
         <LinearLayout android:id="@+id/motionChip"
             android:layout_width="wrap_content" android:layout_height="wrap_content"
             android:layout_marginStart="8dp"
@@ -49,16 +50,16 @@
             android:gravity="center_vertical" android:orientation="horizontal"
             android:visibility="gone">
 
+            <ImageView android:id="@+id/motionIcon"
+                android:layout_width="20dp" android:layout_height="20dp"
+                android:src="@drawable/ic_motion"
+                android:scaleType="fitCenter" />
+
             <View android:id="@+id/motionDot"
                 android:layout_width="14dp" android:layout_height="14dp"
+                android:layout_marginStart="8dp"
                 android:background="@drawable/motion_dot"
                 android:visibility="gone" />
-
-            <TextView android:id="@+id/motionLabel"
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:layout_marginStart="6dp"
-                android:text="MOTION" android:textColor="@color/text_dim"
-                android:textSize="12sp" android:textStyle="bold" />
         </LinearLayout>
     </LinearLayout>
 

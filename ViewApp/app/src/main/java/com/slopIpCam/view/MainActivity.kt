@@ -138,9 +138,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Motion chip states: hidden (motion features off), dim "MOTION"
-     * (detection armed, idle), pulsing dot + "MOTION REC" (the server's
-     * motion window is recording right now, per EVENT:MOTION_REC).
+     * Motion chip states: hidden (motion features off), dim stick-figure
+     * icon (detection armed, idle), red icon + pulsing record dot (the
+     * server's motion window is recording right now, per EVENT:MOTION_REC).
      */
     private fun updateMotionIndicator() {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
@@ -148,19 +148,17 @@ class MainActivity : AppCompatActivity() {
             prefs.getBoolean("motion_snaps", false)
         val chip = findViewById<View>(R.id.motionChip)
         val dot = findViewById<View>(R.id.motionDot)
-        val label = findViewById<TextView>(R.id.motionLabel)
+        val icon = findViewById<ImageView>(R.id.motionIcon)
         when {
             motionRecActive -> {
                 chip.visibility = View.VISIBLE
+                icon.setColorFilter(getColor(R.color.rec_red), android.graphics.PorterDuff.Mode.SRC_ATOP)
                 dot.visibility = View.VISIBLE
-                label.text = "MOTION REC"
-                label.setTextColor(0xFFFFAB00.toInt())
             }
             armed -> {
                 chip.visibility = View.VISIBLE
+                icon.setColorFilter(getColor(R.color.text_dim), android.graphics.PorterDuff.Mode.SRC_ATOP)
                 dot.visibility = View.GONE
-                label.text = "MOTION"
-                label.setTextColor(getColor(R.color.text_dim))
             }
             else -> chip.visibility = View.GONE
         }

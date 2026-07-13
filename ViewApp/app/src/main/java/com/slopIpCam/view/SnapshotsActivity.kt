@@ -1,7 +1,12 @@
 package com.slopIpCam.view
 
+import android.content.ContentValues
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
+import android.view.GestureDetector
 import android.view.LayoutInflater
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.*
@@ -33,6 +38,10 @@ class SnapshotsActivity : AppCompatActivity() {
     private lateinit var viewerImage: ImageView
     private lateinit var viewerVideo: PlayerView
     private var player: ExoPlayer? = null
+    private var currentPos = -1
+    private lateinit var gestureDetector: GestureDetector
+    private val swipeThreshold = 80
+    private val swipeVelocity = 120
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -51,6 +60,10 @@ class SnapshotsActivity : AppCompatActivity() {
         viewer = findViewById(R.id.viewer)
         viewerImage = findViewById(R.id.viewerImage)
         viewerVideo = findViewById(R.id.viewerVideo)
+        // controls auto-hide after a short beat and reappear on tap, so they
+        // don't sit over the video; the center play overlay is dropped too
+        viewerVideo.controllerShowTimeoutMs = 2500
+        viewerVideo.controllerHideOnTouch = true
 
         swipe.setColorSchemeColors(getColor(R.color.neon))
         swipe.setProgressBackgroundColorSchemeColor(getColor(R.color.surface))
@@ -61,8 +74,7 @@ class SnapshotsActivity : AppCompatActivity() {
         grid.setOnItemClickListener { _, _, pos, _ ->
             when {
                 selected.isNotEmpty() -> toggleSelection(urls[pos])
-                showingClips -> openClip(urls[pos])
-                else -> openImage(urls[pos])
+                else -> openItem(pos)
             }
         }
         grid.setOnItemLongClickListener { _, _, pos, _ ->
@@ -71,6 +83,28 @@ class SnapshotsActivity : AppCompatActivity() {
         }
         findViewById<TextView>(R.id.btnDelete).setOnClickListener { deleteSelected() }
         findViewById<TextView>(R.id.btnCloseViewer).setOnClickListener { closeViewer() }
+        findViewById<TextView>(R.id.btnDownload).setOnClickListener { downloadClip() }
+
+        // swipe left/right in the fullscreen viewer to page through items
+        gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onFling(
+                e1: MotionEvent?, e2: MotionEvent, v1: Float, v2: Float
+            ): Boolean {
+                if (e1 == null) return false
+                val dx = e2.x - e1.x
+                val dy = e2.y - e1.y
+                if (kotlin.math.abs(dx) > kotlin.math.abs(dy) &&
+                    kotlin.math.abs(dx) > swipeThreshold &&
+                    kotlin.math.abs(v1) > swipeVelocity
+                ) {
+                    if (dx < 0) openItem(currentPos + 1) // swipe left -> next
+                    else openItem(currentPos - 1)        // swipe right -> prev
+                    return true
+                }
+                return false
+            }
+        })
+        viewer.setOnTouchListener { _, event -> gestureDetector.onTouchEvent(event) }
 
         // back closes the fullscreen viewer, then selection mode, then leaves
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -139,10 +173,18 @@ class SnapshotsActivity : AppCompatActivity() {
         }
     }
 
+    private fun openItem(pos: Int) {
+        if (pos < 0 || pos >= urls.size) return
+        currentPos = pos
+        val url = urls[pos]
+        if (showingClips) openClip(url) else openImage(url)
+    }
+
     private fun openImage(url: String) {
         viewerVideo.visibility = View.GONE
         viewerImage.visibility = View.VISIBLE
         viewer.visibility = View.VISIBLE
+        findViewById<View>(R.id.btnDownload).visibility = View.GONE
         Glide.with(this).load(url).into(viewerImage)
     }
 
@@ -150,6 +192,7 @@ class SnapshotsActivity : AppCompatActivity() {
         viewerImage.visibility = View.GONE
         viewerVideo.visibility = View.VISIBLE
         viewer.visibility = View.VISIBLE
+        findViewById<View>(R.id.btnDownload).visibility = View.VISIBLE
         val p = player ?: ExoPlayer.Builder(this).build().also {
             player = it
             viewerVideo.player = it
@@ -171,6 +214,42 @@ class SnapshotsActivity : AppCompatActivity() {
         player?.clearMediaItems()
         Glide.with(this).clear(viewerImage)
         viewer.visibility = View.GONE
+        findViewById<View>(R.id.btnDownload).visibility = View.GONE
+    }
+
+    /**
+     * Stream the currently-open clip to the shared Downloads folder via
+     * MediaStore (no extra permission needed on Android 10+).
+     */
+    private fun downloadClip() {
+        if (currentPos < 0 || currentPos >= urls.size) return
+        val url = urls[currentPos]
+        val name = url.substringAfterLast('/').ifEmpty { "clip.mp4" }
+        scope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                try {
+                    val resp = client.newCall(Request.Builder().url(url).build()).execute()
+                    if (!resp.isSuccessful) return@withContext false
+                    val values = ContentValues().apply {
+                        put(MediaStore.Downloads.DISPLAY_NAME, name)
+                        put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                        put(MediaStore.Downloads.MIME_TYPE, "video/mp4")
+                    }
+                    val uri = contentResolver.insert(
+                        MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
+                    ) ?: return@withContext false
+                    contentResolver.openOutputStream(uri).use { out ->
+                        resp.body?.byteStream()?.copyTo(out!!)
+                    }
+                    true
+                } catch (e: Exception) {
+                    false
+                }
+            }
+            Toast.makeText(this@SnapshotsActivity,
+                if (ok) "Saved to Downloads" else "Download failed",
+                Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun loadItems(onDone: () -> Unit) {
@@ -235,11 +314,11 @@ class SnapshotAdapter(
             Glide.with(context).load(urls[pos] + ".jpg")
                 .into(view.findViewById(R.id.imgClipThumb))
         } else {
-            val img = (convertView as? ImageView)
-                ?: LayoutInflater.from(context)
-                    .inflate(R.layout.item_snapshot, parent, false) as ImageView
-            Glide.with(context).load(urls[pos]).into(img)
-            view = img
+            view = convertView ?: LayoutInflater.from(context)
+                .inflate(R.layout.item_snapshot, parent, false)
+            Glide.with(context).load(urls[pos])
+                .into(view.findViewById(R.id.imgThumb))
+            view.findViewById<TextView>(R.id.tvSnapDate).text = snapLabel(urls[pos])
         }
         view.alpha = if (urls[pos] in selected) 0.35f else 1f
         return view
@@ -252,5 +331,12 @@ class SnapshotAdapter(
         val name = url.substringAfterLast('/')
         val m = stamp.find(name) ?: return name.removeSuffix(".mp4")
         return "${m.groupValues[1]}\n${m.groupValues[2]}:${m.groupValues[3]}"
+    }
+
+    // "snap_2026-07-09_17-30-01.jpg" -> "2026-07-09  17:30"
+    private fun snapLabel(url: String): String {
+        val name = url.substringAfterLast('/')
+        val m = stamp.find(name) ?: return name.substringBeforeLast('.')
+        return "${m.groupValues[1]}  ${m.groupValues[2]}:${m.groupValues[3]}"
     }
 }
