@@ -103,7 +103,7 @@
         android:focusable="true"
         android:visibility="gone">
 
-        <ImageView
+        <com.github.chrisbanes.photoview.PhotoView
             android:id="@+id/viewerImage"
             android:layout_width="match_parent"
             android:layout_height="match_parent"

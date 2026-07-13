@@ -11,6 +11,9 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.view.GestureDetector
+import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.view.View
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
@@ -36,6 +39,10 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var webRtcJob: Job? = null
     private lateinit var eglBase: EglBase
     private lateinit var renderer: SurfaceViewRenderer
+    // pinch-zoom / pan state for the live feed (applied as a View transform)
+    private var videoScale = 1f
+    private var videoTransX = 0f
+    private var videoTransY = 0f
     private var recAnimator: ObjectAnimator? = null
     private var motionAnimator: ObjectAnimator? = null
     // server-reported: a motion window is currently recording (EVENT:MOTION_REC)
@@ -52,6 +59,7 @@ class MainActivity : AppCompatActivity() {
         renderer.setMirror(false)
         // show the whole frame at true aspect; letterbox only where unavoidable
         renderer.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
+        setupVideoZoom()
 
         PeerConnectionFactory.initialize(
             PeerConnectionFactory.InitializationOptions.builder(this).createInitializationOptions()
@@ -285,6 +293,83 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Pinch-zoom and two-finger/one-finger pan on the live feed. Implemented as
+     * a View transform (scale + translation, pivot at the top-left) rather than
+     * through the renderer, since SurfaceViewRenderer has no zoom API. Android
+     * composites SurfaceView through the View hierarchy transform from 7.0 on,
+     * so this works on the Pixel 9. Double-tap resets to fit.
+     */
+    private fun setupVideoZoom() {
+        var lastX = 0f
+        var lastY = 0f
+        var dragging = false
+
+        val scaleListener = object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScale(detector: ScaleGestureDetector): Boolean {
+                val prev = videoScale
+                videoScale = (videoScale * detector.scaleFactor).coerceIn(1f, 4f)
+                val f = videoScale / prev
+                // keep the pinch focus point anchored under the fingers
+                videoTransX = detector.focusX - (detector.focusX - videoTransX) * f
+                videoTransY = detector.focusY - (detector.focusY - videoTransY) * f
+                applyVideoTransform()
+                return true
+            }
+        }
+        val scaleDetector = ScaleGestureDetector(this, scaleListener)
+        val gd = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                resetVideoTransform()
+                return true
+            }
+        })
+
+        renderer.setOnTouchListener { _, e ->
+            scaleDetector.onTouchEvent(e)
+            gd.onTouchEvent(e)
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    lastX = e.x; lastY = e.y
+                    dragging = videoScale > 1.0001f
+                }
+                MotionEvent.ACTION_POINTER_DOWN -> dragging = false
+                MotionEvent.ACTION_MOVE -> {
+                    if (dragging && e.pointerCount == 1) {
+                        videoTransX += e.x - lastX
+                        videoTransY += e.y - lastY
+                        lastX = e.x; lastY = e.y
+                        applyVideoTransform()
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> dragging = false
+            }
+            true
+        }
+    }
+
+    private fun applyVideoTransform() {
+        val w = renderer.width.toFloat()
+        val h = renderer.height.toFloat()
+        // pivot at top-left so the scale math stays simple; clamp the pan so
+        // the zoomed frame always covers the screen
+        videoTransX = videoTransX.coerceIn((1 - videoScale) * w, 0f)
+        videoTransY = videoTransY.coerceIn((1 - videoScale) * h, 0f)
+        renderer.pivotX = 0f
+        renderer.pivotY = 0f
+        renderer.scaleX = videoScale
+        renderer.scaleY = videoScale
+        renderer.translationX = videoTransX
+        renderer.translationY = videoTransY
+    }
+
+    private fun resetVideoTransform() {
+        videoScale = 1f
+        videoTransX = 0f
+        videoTransY = 0f
+        applyVideoTransform()
+    }
+
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) enterFullscreen() // re-hide bars after dialogs/app switches
@@ -414,6 +499,7 @@ class MainActivity : AppCompatActivity() {
             renderer.init(eglBase.eglBaseContext, null)
             renderer.setMirror(false)
             renderer.setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
+            resetVideoTransform()
             webRtcJob = launch(Dispatchers.IO) { startWebRtc(base) }
         }
     }

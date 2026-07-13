@@ -45,6 +45,8 @@ dependencies {
     implementation("androidx.preference:preference-ktx:1.2.1")
     implementation("com.github.bumptech.glide:glide:4.16.0")
     implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
+    // pinch-zoom / pan for gallery images
+    implementation("com.github.chrisbanes:PhotoView:2.3.0")
     // fragmented-mp4 playback with working HTTP seek (VideoView can't)
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")

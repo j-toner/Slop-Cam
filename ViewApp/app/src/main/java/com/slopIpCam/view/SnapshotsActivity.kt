@@ -20,6 +20,11 @@ import androidx.media3.ui.PlayerView
 import androidx.preference.PreferenceManager
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import com.bumptech.glide.Glide
+import com.github.chrisbanes.photoview.OnSingleFlingListener
+import com.github.chrisbanes.photoview.PhotoView
+import java.time.Instant
+import java.time.LocalDateTime
+import java.time.ZoneId
 import kotlinx.coroutines.*
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -35,7 +40,7 @@ class SnapshotsActivity : AppCompatActivity() {
     private lateinit var httpBase: String
     private lateinit var grid: GridView
     private lateinit var viewer: FrameLayout
-    private lateinit var viewerImage: ImageView
+    private lateinit var viewerImage: PhotoView
     private lateinit var viewerVideo: PlayerView
     private var player: ExoPlayer? = null
     private var currentPos = -1
@@ -104,7 +109,33 @@ class SnapshotsActivity : AppCompatActivity() {
                 return false
             }
         })
-        viewer.setOnTouchListener { _, event -> gestureDetector.onTouchEvent(event) }
+
+        // Live video paging: ExoPlayer doesn't eat horizontal swipes, so the
+        // viewer's own listener still pages clips. (Photos use PhotoView's
+        // single-fling hook below, and we must NOT override PhotoView's own
+        // touch listener or its pinch-zoom/pan breaks.)
+        viewer.setOnTouchListener { _, event ->
+            if (viewerVideo.visibility == View.VISIBLE) gestureDetector.onTouchEvent(event)
+            false
+        }
+
+        // PhotoView owns pinch-zoom/pan via its internal listener; we only hook
+        // a single-finger fling for paging. At scale 1 a fling pages; while
+        // zoomed the same gesture pans instead, so we skip paging then.
+        viewerImage.setOnSingleFlingListener { e1, e2, v1, v2 ->
+            if (e1 == null || viewerImage.scale > 1.0f) return@setOnSingleFlingListener false
+            val dx = e2.x - e1.x
+            val dy = e2.y - e1.y
+            if (kotlin.math.abs(dx) > kotlin.math.abs(dy) &&
+                kotlin.math.abs(dx) > swipeThreshold &&
+                kotlin.math.abs(v1) > swipeVelocity
+            ) {
+                if (dx < 0) openItem(currentPos + 1) else openItem(currentPos - 1)
+                return@setOnSingleFlingListener true
+            }
+            false
+        }
+
 
         // back closes the fullscreen viewer, then selection mode, then leaves
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -185,6 +216,8 @@ class SnapshotsActivity : AppCompatActivity() {
         viewerImage.visibility = View.VISIBLE
         viewer.visibility = View.VISIBLE
         findViewById<View>(R.id.btnDownload).visibility = View.GONE
+        // reset any zoom left over from a previous image before loading
+        viewerImage.setScale(1.0f, false)
         Glide.with(this).load(url).into(viewerImage)
     }
 
@@ -325,6 +358,9 @@ class SnapshotAdapter(
     }
 
     private val stamp = Regex("""(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})""")
+    // current server format: "<unix-millis>.jpg" (a "-N" suffix avoids
+    // collisions when two snaps land in the same millisecond)
+    private val msStamp = Regex("""^(\d{13})(?:-\d+)?\.jpg$""")
 
     // "cam_2026-07-09_17-30-01.mp4" -> "2026-07-09\n17:30"
     private fun clipLabel(url: String): String {
@@ -333,9 +369,21 @@ class SnapshotAdapter(
         return "${m.groupValues[1]}\n${m.groupValues[2]}:${m.groupValues[3]}"
     }
 
-    // "snap_2026-07-09_17-30-01.jpg" -> "2026-07-09  17:30"
+    // "<unix-millis>.jpg" -> "2026-07-09  17:30" (or the older
+    // "snap_2026-07-09_17-30-01.jpg" form, or the raw name as fallback)
     private fun snapLabel(url: String): String {
         val name = url.substringAfterLast('/')
+        msStamp.find(name)?.let {
+            runCatching {
+                val dt = LocalDateTime.ofInstant(
+                    Instant.ofEpochMilli(it.groupValues[1].toLong()),
+                    ZoneId.systemDefault()
+                )
+                return "%04d-%02d-%02d  %02d:%02d".format(
+                    dt.year, dt.monthValue, dt.dayOfMonth, dt.hour, dt.minute
+                )
+            }
+        }
         val m = stamp.find(name) ?: return name.substringBeforeLast('.')
         return "${m.groupValues[1]}  ${m.groupValues[2]}:${m.groupValues[3]}"
     }
