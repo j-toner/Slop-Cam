@@ -39,6 +39,13 @@
             app:defaultValue="false" />
     </PreferenceCategory>
 
+    <PreferenceCategory app:title="App">
+        <Preference
+            app:key="check_update"
+            app:title="Check for app update"
+            app:summary="Download and install the latest staged build if it's newer than this one" />
+    </PreferenceCategory>
+
     <PreferenceCategory app:title="Security recording">
         <SwitchPreferenceCompat
             app:key="security_mode"
