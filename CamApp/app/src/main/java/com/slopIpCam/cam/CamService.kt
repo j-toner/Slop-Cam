@@ -253,14 +253,15 @@ class CamService : Service(), LifecycleOwner {
                 }
             }
             msg == "CMD:SNAPSHOT" -> takeSnapshot()
-            msg == "CMD:FLASHLIGHT_ON" -> setTorch(true)
-            msg == "CMD:FLASHLIGHT_OFF" -> setTorch(false)
+            msg == "CMD:FLASHLIGHT_ON" -> { muteMotionDetection(); setTorch(true) }
+            msg == "CMD:FLASHLIGHT_OFF" -> { muteMotionDetection(); setTorch(false) }
             // remote motion config from the viewer (via ctrl-server):
             // snap=1 enables motion-snapshot uploads, detect=1 enables
             // motion detection (EVENT:MOTION). The two are independent — a
             // motion-recording viewer sends detect=1 with snap=0.
             msg.startsWith("CMD:MOTION:") -> handleMotionCmd(msg)
             msg == "CMD:SWITCH_LENS" -> handler.post {
+                muteMotionDetection()
                 val lens = rtspStreamer?.toggleLens()
                 if (lens != null) wsClient.sendText("EVENT:LENS:$lens")
             }
@@ -277,6 +278,18 @@ class CamService : Service(), LifecycleOwner {
             putBoolean("motion_detect", detect == 1)
         }.apply()
     }
+
+    // user-initiated camera changes (torch, lens switch) transform the whole
+    // frame and would read as motion — mute detection while auto-exposure
+    // resettles. Frame buffers keep updating during the mute, so the first
+    // compared pair afterwards is recent and doesn't diff across the change.
+    @Volatile private var motionMuteUntilMs = 0L
+
+    private fun muteMotionDetection(ms: Long = 3000) {
+        motionMuteUntilMs = System.currentTimeMillis() + ms
+    }
+
+    private fun motionMuted() = System.currentTimeMillis() < motionMuteUntilMs
 
     private fun setTorch(on: Boolean) {
         val streamer = rtspStreamer
@@ -339,6 +352,7 @@ class CamService : Service(), LifecycleOwner {
         val prev = streamPrevLuma
         streamPrevLuma = luma
         if (prev == null || prev.size != luma.size) return
+        if (motionMuted()) return // user-initiated scene change settling
         if (!motionDetector.analyze(luma, prev, w, h, stride)) return
         val now = System.currentTimeMillis()
         if (now - lastMotionEventMs >= 5000) {
@@ -399,7 +413,7 @@ class CamService : Service(), LifecycleOwner {
                     val luma = ByteArray(buf.remaining())
                     buf.get(luma)
                     val prev = prevLuma
-                    if (prev != null && prev.size == luma.size &&
+                    if (prev != null && prev.size == luma.size && !motionMuted() &&
                         motionDetector.analyze(luma, prev, proxy.width, proxy.height, plane.rowStride)
                     ) {
                         val now = System.currentTimeMillis()
